@@ -6,24 +6,32 @@ const dicts = {
   zh: {
     title: '侧边栏管理', description: '调整导航项目的顺序和显示状态，立即生效并自动保存。',
     sidebar: '主侧边栏', settings: '设置侧边栏', up: '上移', down: '下移', show: '显示', hide: '隐藏',
-    protected: '始终显示', reset: '恢复默认', resetGroup: '重置此列表', saved: '已自动保存',
-    error: '保存失败：浏览器存储不可用。当前修改仅在本次页面有效。',
+    protected: '始终显示', reset: '恢复默认', resetGroup: '重置此列表',
+    error: '保存到插件配置失败，已重新读取服务器配置，请重试。',
+    offline: '保存失败，无法确认服务器最新配置；当前显示最后已确认的配置。请恢复连接后刷新。',
+    loading: '正在读取插件配置…', saving: '正在保存到插件配置…', saved: '已保存到插件配置',
+    unavailable: '插件配置尚不可用，请重启应用以加载新版服务端插件。', readonly: '当前连接无配置写入权限。',
+    rename: '菜单名称', defaultName: '恢复原名', nameHint: '修改名称后按 Enter 或离开输入框保存；清空可恢复原名。',
     hint: '使用 ↑ ↓ 调整顺序；开关控制显示或隐藏。新安装的导航项目会自动追加。',
     more: '更多', moreHint: '排在此项下面的菜单会收入「更多」', inMore: '位于「更多」菜单内',
     moreLockedHint: '「更多」不可隐藏；可上下移动，调整收纳范围。',
-    fixed: '新会话及底部设置入口保持原位。隐藏项目不会停用插件，也不会出现在「更多」内。',
+    fixed: '底部插件入口也纳入主侧边栏管理；新会话及头像设置入口保持原位。隐藏项目不会停用插件，也不会出现在「更多」内。',
     lockHint: '本插件的设置入口和「更多」不可隐藏；将菜单移到「更多」上方可重新显示在侧边栏。',
     empty: '当前没有可调整的导航项目。', compatibility: '当前应用的导航接口不兼容，未修改原有导航。',
   },
   en: {
     title: 'Sidebar Manager', description: 'Reorder navigation entries and control their visibility. Changes apply immediately and are saved automatically.',
     sidebar: 'Main sidebar', settings: 'Settings sidebar', up: 'Move up', down: 'Move down', show: 'Show', hide: 'Hide',
-    protected: 'Always visible', reset: 'Restore defaults', resetGroup: 'Reset this list', saved: 'Saved automatically',
-    error: 'Could not save: browser storage is unavailable. Changes will last only for this page.',
+    protected: 'Always visible', reset: 'Restore defaults', resetGroup: 'Reset this list',
+    error: 'Could not save plugin configuration. Server preferences were reloaded; please retry.',
+    offline: 'Save failed and the latest server state could not be confirmed. Showing the last confirmed configuration; reconnect and refresh.',
+    loading: 'Loading plugin configuration…', saving: 'Saving plugin configuration…', saved: 'Saved to plugin configuration',
+    unavailable: 'Plugin configuration is unavailable. Restart the app to load the updated server plugin.', readonly: 'This connection cannot write configuration.',
+    rename: 'Menu name', defaultName: 'Restore name', nameHint: 'Press Enter or leave the field to save a name. Clear it to restore the original.',
     hint: 'Use ↑ ↓ to reorder and the switches to show or hide. Newly installed entries are appended automatically.',
     more: 'More', moreHint: 'Entries below this row go into More', inMore: 'Inside the More menu',
     moreLockedHint: 'More cannot be hidden. Move it to change which entries are folded.',
-    fixed: 'New Session and the bottom Settings launcher keep their positions. Hiding an entry does not disable its plugin and excludes it from More too.',
+    fixed: 'Plugin footer actions are managed in the main sidebar too. New Session and the profile/settings launcher keep their positions. Hidden entries do not disable plugins and are excluded from More.',
     lockHint: 'This settings entry and More cannot be hidden. Move entries above More to put them back in the sidebar.',
     empty: 'No navigation entries are available.', compatibility: 'The application navigation API is incompatible. Original navigation was left unchanged.',
   },
@@ -36,6 +44,7 @@ const css = `
 .dshsb-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;gap:12px;background:var(--dsw-alias-bg-layer-2)}.dshsb-head h3{font-size:15px;margin:0;font-weight:600}
 .dshsb-row{display:flex;gap:12px;align-items:center;padding:12px 18px;min-height:62px;border-top:1px solid var(--dsw-alias-border-l1)}.dshsb-muted .dshsb-label{color:var(--dsw-alias-label-secondary)}
 .dshsb-number{width:22px;flex-shrink:0;font-size:12px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary)}.dshsb-label{flex:1;min-width:0;overflow-wrap:anywhere}.dshsb-id{display:block;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dshsb-name{display:flex;align-items:center;gap:6px}.dshsb-name-input{min-width:0;width:100%;font:inherit;color:inherit;line-height:inherit;background:transparent;border:1px solid transparent;border-radius:6px;padding:2px 4px;margin-left:-5px}.dshsb-name-input:hover:not(:disabled){border-color:var(--dsw-alias-border-l1)}.dshsb-name-input:focus{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}.dshsb-name-reset{font-size:11px!important;flex:none;padding:3px 6px!important}
 .dshsb-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}.dshsb-page button{font:inherit;color:inherit;cursor:pointer}.dshsb-button{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:9px;padding:6px 12px;min-height:32px}.dshsb-button:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2)}.dshsb-page button:disabled{opacity:.4;cursor:not-allowed}.dshsb-page button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:3px}.dshsb-arrow{padding:3px 9px}
 .dshsb-switch{position:relative;width:36px;height:22px;border:0;border-radius:99px;padding:0;background:var(--dsw-alias-state-idle-primary);margin-left:10px;flex-shrink:0}.dshsb-switch[aria-checked=true]{background:var(--dsw-alias-brand-primary)}.dshsb-switch span{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-bg-base);transition:transform .12s}.dshsb-switch[aria-checked=true] span{transform:translateX(14px)}
 .dshsb-lock{font-size:11px;color:var(--dsw-alias-label-secondary);margin-left:6px}.dshsb-note{font-size:12px}.dshsb-empty{padding:18px}
@@ -43,35 +52,22 @@ const css = `
 @media(prefers-reduced-motion:reduce){.dshsb-switch span{transition:none}}
 `;
 return {
-  inject: ['slots', 'locale'],
+  inject: ['slots', 'locale', 'configForms'],
   apply(ctx) {
     ctx.effect(() => ctx.locale.register(NS, dicts));
     const t = ctx.locale.bind(NS);
-    let prefs = normalize(null), storageError = false;
-    const listeners = new Set();
-    try { prefs = normalize(JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')); }
-    catch { storageError = true; }
-    const source = {
-      getSnapshot: () => prefs,
-      subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); },
-    };
-    const notify = () => { for (const fn of [...listeners]) fn(); };
-    function save(next) {
-      prefs = normalize(next);
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs)); storageError = false; }
-      catch { storageError = true; }
-      notify();
-      return !storageError;
-    }
-    ctx.effect(() => {
-      const sync = event => {
-        if (event.storageArea !== localStorage || (event.key !== STORAGE_KEY && event.key !== null)) return;
-        try { prefs = normalize(JSON.parse(event.newValue || 'null')); storageError = false; notify(); }
-        catch { /* Ignore a malformed cross-window update. */ }
-      };
-      window.addEventListener('storage', sync);
-      return () => window.removeEventListener('storage', sync);
+    const source = createPreferencesController(ctx.configForms.get(OWN_ID), {
+      read: () => JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'),
+      clear: () => localStorage.removeItem(STORAGE_KEY),
+      recover: async () => {
+        const mirror = ctx.configForms.describe();
+        await mirror.load();
+        const view = mirror.getSnapshot();
+        return view.status === 'ready' && !view.error;
+      },
     });
+    const save = next => source.save(next);
+    ctx.effect(() => () => source.dispose());
     // rc.5 does not provide a navigation projection/filter API. Registering
     // another parent with the same children is INVALID: declarations have one
     // owner, even when the parent registration shadows the original.
@@ -80,6 +76,42 @@ return {
     // exact store. No second shell or child declarations are registered.
     const compatibility = [];
     const identity = value => value;
+    const footerCatalog = catalog('sidebar.footer.action');
+    // SlotOutlet adds a display:contents data-slot anchor. It remains a DOM
+    // parent, so a direct-child-only selector misses the native button/icon.
+    // Match only root controls, not arbitrary buttons in plugin subpanels.
+    const footerButton = ':is(.dshsb-footer-control,.dshsb-footer-control>[data-slot="sidebar.footer.action"])>button';
+    const footerCss = `
+.dshsb-footer-entry{position:relative;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:14px;font-weight:400;line-height:20px;border-radius:8px;min-width:0}
+.dshsb-footer-entry:hover{background:var(--dsw-alias-bg-layer-2)}
+${footerButton}{box-sizing:border-box!important;display:flex!important;align-items:center!important;justify-content:flex-start!important;width:100%!important;min-height:36px!important;height:36px!important;margin:0!important;padding:8px 12px!important;border-radius:8px!important;font:inherit!important;line-height:20px!important}
+${footerButton} svg{width:16px!important;height:16px!important;flex:none}
+.dshsb-footer-entry[data-wide=false] ${footerButton}{justify-content:center!important;padding:8px!important}
+.dshsb-footer-title{position:absolute;inset:0 12px 0 36px;display:flex;align-items:center;pointer-events:none;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:inherit;font:inherit;line-height:20px}
+.dshsb-footer-entry[data-menu=true]{font-size:13px;border-radius:var(--dsw-radius-md)}
+.dshsb-footer-entry[data-menu=true]:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dshsb-footer-entry[data-menu=true] ${footerButton}{min-height:34px!important;height:34px!important;padding:6px 8px!important;border-radius:var(--dsw-radius-md)!important}
+.dshsb-footer-entry[data-menu=true] ${footerButton} svg{width:14px!important;height:14px!important;color:var(--dsw-alias-menu-icon)}
+.dshsb-footer-entry[data-menu=true] .dshsb-footer-title{inset:0 8px 0 28px}
+`;
+    function FooterAction({id, label, wide, inMore = false, renderSlot, onDismiss}) {
+      return h('div', {className: 'dshsb-footer-entry', 'data-wide': wide, 'data-menu': inMore,
+        role: 'group', 'aria-label': label, title: !wide ? label : undefined,
+        onClick: event => {
+          // The icon-only original button fills the row; the presentation label
+          // never intercepts pointer events. Native actions still own the click.
+          if (!event.defaultPrevented) onDismiss?.();
+        }}, h('style', null, footerCss),
+        h('div', {className: 'dshsb-footer-control'}, renderSlot('sidebar.footer.action', {wide: false}, {only: id})),
+        wide ? h('span', {className: 'dshsb-footer-title', 'aria-hidden': true}, label) : null);
+    }
+    function ProjectedSidebar({component: Component, originalRenderSlot, ...props}) {
+      // This bridge is always mounted with the same original shell component.
+      // Calling it here keeps its hooks in a stable, separate React boundary.
+      const tree = Component(props);
+      return projectSidebarTree(React, tree, (id, wide, key, label) =>
+        h(FooterAction, {key, id, label, wide, renderSlot: originalRenderSlot}));
+    }
     function wrap(name, hook, group) {
       ctx.effect(() => {
         const patches = new Map();
@@ -94,35 +126,49 @@ return {
             }
             const hookName = 'use' + hook[0].toUpperCase() + hook.slice(1);
             function NavigationAdapter(props) {
-              const state = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
+              const {preferences: state} = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
+              // The wrapper's group is fixed. Keep its hook list stable even
+              // when disposal switches it back to the original component.
+              const footer = group === 'sidebar'
+                ? React.useSyncExternalStore(footerCatalog.subscribe, footerCatalog.getSnapshot) : null;
               const originalHook = props[hookName];
               if (!enabled || typeof originalHook !== 'function') return h(Component, {...props, key: 'dshsb-original'});
               // Consume the original hooks normally, preserving subscriptions.
               if (group === 'sidebar') {
                 const usePanels = selector => {
-                  const rows = originalHook(identity);
+                  const rows = mergeSidebarRows(originalHook(identity), footer);
                   return selector(sidebarView(rows, state.sidebar, t('more')).panels);
                 };
                 const useEntryPins = selector => {
                   props.useEntryPins(identity);
-                  const rows = originalHook(identity);
+                  const rows = mergeSidebarRows(originalHook(identity), footer);
                   return selector(sidebarView(rows, state.sidebar, t('more')).unpinned);
                 };
                 const usePanelInfo = selector => props.usePanelInfo(info => selector({
                   ...info, activePanelId: viewPanelId(info.activePanelId),
                 }));
                 const renderSlot = (name, owner, options) => {
+                  if (name === 'sidebar.footer.action') return h(React.Fragment, null,
+                    ...ctx.slots.entriesOfSlot(name).filter(entry => !isMenuEntry(entry.options))
+                      .map(entry => h(React.Fragment, {key: entry.options.id},
+                        props.renderSlot(name, owner, {...options, only: entry.options.id}))));
                   const shared = name === 'sidebar.panellist.actions'
                     ? {...owner, entries: owner.entries.filter(entry => entry.id !== MORE_ID),
+                        renderFooterAction: (id, onDismiss, label) => h(FooterAction, {
+                          id: footerEntryId(id), label, wide: true, inMore: true, renderSlot: props.renderSlot, onDismiss,
+                        }),
                         renderPanelIcon: (id, active) => props.renderSlot('sidebar.panellist',
-                          {size: 16, active: Boolean(active)}, {only: realPanelId(id)}),
+                          {size: 14, active: Boolean(active)}, {only: realPanelId(id)}),
                       } : owner;
                   return props.renderSlot(name, shared,
                     name === 'sidebar.panellist' && typeof options?.only === 'string'
                       ? {...options, only: realPanelId(options.only)} : options);
                 };
-                return h(Component, {...props, key: 'dshsb-managed', usePanels, useEntryPins, usePanelInfo, renderSlot,
-                  selectPanel: id => props.selectPanel(realPanelId(id)),
+                return h(ProjectedSidebar, {...props, key: 'dshsb-managed', component: Component,
+                  originalRenderSlot: props.renderSlot, usePanels, useEntryPins, usePanelInfo, renderSlot,
+                  t: (key, ...args) => key === 'panels.more'
+                    ? menuLabel({id: MORE_ID, label: t('more')}, state.sidebar) : props.t(key, ...args),
+                  selectPanel: id => { if (footerEntryId(id) === null) props.selectPanel(realPanelId(id)); },
                 });
               }
               const useNavigation = selector => {
@@ -142,8 +188,7 @@ return {
           for (const restore of patches.values()) restore();
           // An already mounted adapter may survive until its parent rerenders.
           // Make it immediately render the unmodified view on plugin disposal.
-          prefs = normalize(prefs);
-          notify();
+          source.refresh();
           patches.clear();
         };
       });
@@ -152,30 +197,59 @@ return {
     wrap('sidebar.settings', 'sections', 'settings');
 
     function catalog(name) {
-      let version = -1, revision = -1, rows = [];
+      const names = name === 'sidebar.panellist' ? [name, 'sidebar.footer.action'] : [name];
+      let version = '', revision = -1, rows = [];
       return {
         getSnapshot() {
-          const v = ctx.slots.getVersion(name), r = ctx.locale.getSnapshot().revision;
+          const v = names.map(slot => ctx.slots.getVersion(slot)).join(':'), r = ctx.locale.getSnapshot().revision;
           if (v !== version || r !== revision) {
             version = v; revision = r;
-            rows = ctx.slots.entriesOfSlot(name).map(entry => ({
+            rows = ctx.slots.entriesOfSlot(name)
+              .filter(entry => name !== 'sidebar.footer.action' || isMenuEntry(entry.options)).map(entry => ({
               id: entry.options.id,
               order: entry.options.order ?? 0,
               label: (typeof entry.options.label === 'function' ? entry.options.label() : entry.options.label) || entry.options.id,
             })).filter(row => typeof row.id === 'string');
-            if (name === 'sidebar.panellist') rows = withMore(rows, t('more'));
+            if (name === 'sidebar.panellist') rows = withMore(mergeSidebarRows(rows, footerCatalog.getSnapshot()), t('more'));
           }
           return rows;
         },
         subscribe(fn) {
-          const a = ctx.slots.subscribe(name, fn), b = ctx.locale.subscribe(fn);
-          return () => { a(); b(); };
+          const subscriptions = names.map(slot => ctx.slots.subscribe(slot, fn));
+          subscriptions.push(ctx.locale.subscribe(fn));
+          return () => { for (const off of subscriptions) off(); };
         },
       };
     }
     const catalogs = {sidebar: catalog('sidebar.panellist'), settings: catalog('settings.section')};
+    function NameField({group, row, name, writable}) {
+      const [draft, setDraft] = React.useState(name);
+      const draftVersion = React.useRef(0);
+      React.useEffect(() => setDraft(name), [name]);
+      const commit = async value => {
+        const ticket = ++draftVersion.current;
+        setDraft(value.trim() || row.label);
+        if (value.trim() === name) return;
+        const accepted = await save(rename(source.getSnapshot().preferences, group, row.id, value === row.label ? '' : value));
+        if (!accepted && ticket === draftVersion.current) {
+          setDraft(menuLabel(row, source.getSnapshot().preferences[group]));
+        }
+      };
+      return h('div', {className: 'dshsb-name'},
+        h('input', {className: 'dshsb-name-input', value: draft, maxLength: 80, disabled: !writable,
+          'aria-label': `${t('rename')} ${row.label}`, placeholder: row.label,
+          onChange: event => { draftVersion.current += 1; setDraft(event.target.value); },
+          onBlur: event => commit(event.target.value),
+          onKeyDown: event => {
+            if (event.key === 'Enter' && !event.nativeEvent?.isComposing) { event.preventDefault(); event.currentTarget.blur(); }
+            if (event.key === 'Escape') { event.preventDefault(); event.currentTarget.value = name; setDraft(name); event.currentTarget.blur(); }
+          },
+        }),
+        name !== row.label ? h('button', {type: 'button', className: 'dshsb-button dshsb-name-reset', disabled: !writable,
+          onClick: () => save(rename(source.getSnapshot().preferences, group, row.id, ''))}, t('defaultName')) : null);
+    }
     function Page() {
-      const state = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
+      const {preferences: state, status, writable} = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
       React.useSyncExternalStore(fn => ctx.locale.subscribe(fn), () => ctx.locale.getSnapshot());
       const all = {
         sidebar: React.useSyncExternalStore(catalogs.sidebar.subscribe, catalogs.sidebar.getSnapshot),
@@ -186,32 +260,35 @@ return {
         h('h2', null, t('title')), h('p', null, t('description')),
         compatibility.length ? h('p', {role: 'alert', className: 'dshsb-error'}, t('compatibility')) : null,
         h('div', {className: 'dshsb-toolbar'},
-          h('span', {role: 'status', 'aria-live': 'polite', className: 'dshsb-status' + (storageError ? ' dshsb-error' : '')}, t(storageError ? 'error' : 'saved')),
-          h('button', {type: 'button', className: 'dshsb-button', onClick: () => save(normalize(null))}, t('reset'))),
+          h('span', {role: 'status', 'aria-live': 'polite', className: 'dshsb-status' + (['error', 'offline', 'unavailable'].includes(status) ? ' dshsb-error' : '')}, t(status)),
+          h('button', {type: 'button', className: 'dshsb-button', disabled: !writable, onClick: () => save(normalize(null))}, t('reset'))),
         h('p', {className: 'dshsb-note'}, t('hint')),
+        h('p', {className: 'dshsb-note'}, t('nameHint')),
         ...GROUPS.map(group => {
           const rows = arrange(all[group], state[group], true);
           const moreIndex = group === 'sidebar' ? rows.findIndex(row => row.id === MORE_ID) : -1;
           return h('section', {key: group, className: 'dshsb-card', 'aria-label': t(group)},
             h('div', {className: 'dshsb-head'}, h('h3', null, t(group)),
-              h('button', {type: 'button', className: 'dshsb-button', onClick: () => save({...state, [group]: {order: [], hidden: []}})}, t('resetGroup'))),
+              h('button', {type: 'button', className: 'dshsb-button', disabled: !writable,
+                onClick: () => save({...source.getSnapshot().preferences, [group]: {order: [], hidden: []}})}, t('resetGroup'))),
             rows.length === 0 ? h('p', {className: 'dshsb-empty'}, t('empty')) : null,
             ...rows.map((row, i) => {
               const locked = isProtected(row.id), visible = locked || !state[group].hidden.includes(row.id);
               return h('div', {key: row.id, className: 'dshsb-row' + (!visible ? ' dshsb-muted' : '')},
                 h('span', {className: 'dshsb-number', 'aria-hidden': true}, i + 1),
-                h('div', {className: 'dshsb-label'}, row.label, h('span', {className: 'dshsb-id'},
+                h('div', {className: 'dshsb-label'}, h(NameField, {group,
+                  row: all[group].find(entry => entry.id === row.id), name: row.label, writable}), h('span', {className: 'dshsb-id'},
                   row.id === MORE_ID ? t('moreHint') : visible && moreIndex >= 0 && i > moreIndex ? t('inMore') : row.id)),
                 h('div', {className: 'dshsb-actions'},
                   ...[-1, 1].map(delta => h('button', {
                     key: delta, type: 'button', className: 'dshsb-button dshsb-arrow',
                     title: t(delta < 0 ? 'up' : 'down'), 'aria-label': `${t(delta < 0 ? 'up' : 'down')} ${row.label}`,
-                    disabled: delta < 0 ? i === 0 : i === rows.length - 1,
-                    onClick: () => save(move(prefs, group, all[group], row.id, delta)),
+                    disabled: !writable || (delta < 0 ? i === 0 : i === rows.length - 1),
+                    onClick: () => save(move(source.getSnapshot().preferences, group, all[group], row.id, delta)),
                   }, delta < 0 ? '↑' : '↓')),
                   h('button', {type: 'button', className: 'dshsb-switch', role: 'switch', 'aria-checked': visible,
                     'aria-label': `${t(visible ? 'hide' : 'show')} ${row.label}`, title: t(row.id === MORE_ID ? 'moreLockedHint' : locked ? 'lockHint' : visible ? 'hide' : 'show'),
-                    disabled: locked, onClick: () => save(toggle(prefs, group, row.id)),
+                    disabled: locked || !writable, onClick: () => save(toggle(source.getSnapshot().preferences, group, row.id)),
                   }, h('span', {'aria-hidden': true}))));
             }));
         }),
@@ -219,15 +296,17 @@ return {
         h('p', {className: 'dshsb-note'}, t('fixed')));
     }
     const moreCss = `
-.dshsb-more-entry{display:flex;align-items:center;justify-content:flex-start;gap:8px;box-sizing:border-box;width:100%;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);padding:8px 12px;text-align:start;font-family:inherit;font-size:14px;font-weight:400;line-height:20px;cursor:pointer;min-height:36px}
-.dshsb-more-icon{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex:none}.dshsb-more-check{margin-left:auto;flex:none}
-.dshsb-more-entry:hover,.dshsb-more-entry:focus-visible{background:var(--dsw-alias-bg-layer-2)}.dshsb-more-entry:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}.dshsb-more-entry[aria-current=page]{color:var(--dsw-alias-brand-primary)}.dshsb-more-title{overflow-wrap:anywhere;min-width:0}.dshsb-more-separator{height:1px;background:var(--dsw-alias-border-l1);margin:6px 4px}
+.dshsb-more-entry{display:flex;align-items:center;justify-content:flex-start;gap:6px;box-sizing:border-box;width:100%;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);padding:6px 8px;text-align:start;font-family:inherit;font-size:13px;font-weight:400;line-height:20px;cursor:pointer;min-height:34px}
+.dshsb-more-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;flex:none;color:var(--dsw-alias-menu-icon)}.dshsb-more-check{margin-left:auto;flex:none}
+.dshsb-more-entry:hover,.dshsb-more-entry:focus-visible{background:var(--dsw-alias-interactive-bg-hover)}.dshsb-more-entry:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}.dshsb-more-entry[aria-current=page]{color:var(--dsw-alias-brand-primary)}.dshsb-more-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.dshsb-more-separator{height:.5px;background:var(--dsw-alias-border-l2);margin:3px 8px}
 `;
-    function MoreEntries({entries, onOpen, onDismiss, renderPanelIcon}) {
+    function MoreEntries({entries, onOpen, onDismiss, renderPanelIcon, renderFooterAction}) {
       const folded = entries.filter(entry => !entry.pinned && entry.id !== MORE_ID);
       const buttons = React.useRef([]);
       return h(React.Fragment, null, h('style', null, moreCss),
-        ...folded.map((entry, index) => h('button', {
+        ...folded.map((entry, index) => footerEntryId(entry.id) !== null
+          ? h('div', {key: entry.id}, renderFooterAction?.(entry.id, onDismiss, entry.label))
+          : h('button', {
           key: entry.id, type: 'button', role: 'menuitem', tabIndex: 0,
           ref: node => { buttons.current[index] = node; },
           className: 'dshsb-more-entry', 'aria-current': entry.active ? 'page' : undefined,
@@ -235,7 +314,7 @@ return {
           onKeyDown: event => {
             const delta = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
             const next = index + delta;
-            if (delta && next >= 0 && next < folded.length) {
+            if (delta && next >= 0 && next < folded.length && footerEntryId(folded[next].id) === null) {
               event.preventDefault(); event.stopPropagation(); buttons.current[next]?.focus();
             }
             // Let the shell handle Escape and navigation to its own footer rows.
