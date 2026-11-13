@@ -13,10 +13,10 @@ export const Config = z.object({
     sidebar: group(),
     settings: group(),
     workspace: z.object({
-      dynamicSort: z.boolean().default(false),
-      pinning: z.boolean().default(false),
+      dynamicSort: z.boolean().default(true),
+      pinning: z.boolean().default(true),
       onlyPinned: z.boolean().default(false),
-      activeIndicator: z.boolean().default(false),
+      activeIndicator: z.boolean().default(true),
       collapseOneClick: z.boolean().default(true),
       pinnedWorkspaceIds: z.array(z.string()).default([]),
     }).default(null),

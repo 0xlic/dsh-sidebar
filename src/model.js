@@ -53,10 +53,10 @@ export function normalize(value) {
   if (workspace !== null && typeof workspace === 'object' &&
       (Object.getPrototypeOf(workspace) === Object.prototype || Object.getPrototypeOf(workspace) === null)) {
     out.workspace = {
-      dynamicSort: workspace.dynamicSort === true,
-      ...(Object.hasOwn(workspace, 'pinning') ? {pinning: workspace.pinning === true} : {}),
+      dynamicSort: workspace.dynamicSort !== false,
+      pinning: workspace.pinning !== false,
       ...(Object.hasOwn(workspace, 'onlyPinned') ? {onlyPinned: workspace.onlyPinned === true} : {}),
-      ...(Object.hasOwn(workspace, 'activeIndicator') ? {activeIndicator: workspace.activeIndicator === true} : {}),
+      activeIndicator: workspace.activeIndicator !== false,
       collapseOneClick: workspace.collapseOneClick !== false,
       ...(Object.hasOwn(workspace, 'pinnedWorkspaceIds') ? {
         pinnedWorkspaceIds: [...new Set((Array.isArray(workspace.pinnedWorkspaceIds) ? workspace.pinnedWorkspaceIds : [])

@@ -38,16 +38,16 @@ test('host schema exposes menu order/names and optional workspace sorting as liv
   assert.deepEqual(normalize(parsed), {sidebar: {order: ['b', 'a'], names: {b: '自定义菜单'}}, settings: {order: []}});
 });
 
-test('host workspace schema defaults to disabled sorting/pinning and empty IDs and rejects malformed values', () => {
-  const defaults = {dynamicSort: false, pinning: false, onlyPinned: false, activeIndicator: false, collapseOneClick: true, pinnedWorkspaceIds: []};
+test('host workspace schema defaults to enabled sorting/pinning and empty IDs and rejects malformed values', () => {
+  const defaults = {dynamicSort: true, pinning: true, onlyPinned: false, activeIndicator: true, collapseOneClick: true, pinnedWorkspaceIds: []};
   for (const [workspace, expected] of [
-    [null, null], [{}, defaults], [{dynamicSort: false}, defaults],
+    [null, null], [{}, defaults], [{dynamicSort: false}, {...defaults, dynamicSort: false}],
     [{dynamicSort: true}, {...defaults, dynamicSort: true}],
     [{onlyPinned: true}, {...defaults, onlyPinned: true}],
     [{activeIndicator: true}, {...defaults, activeIndicator: true}],
     [{collapseOneClick: false}, {...defaults, collapseOneClick: false}],
     [{pinning: true, pinnedWorkspaceIds: ['a', 'unloaded']}, {...defaults, pinning: true, pinnedWorkspaceIds: ['a', 'unloaded']}],
-    [{pinning: false, pinnedWorkspaceIds: ['a']}, {...defaults, pinnedWorkspaceIds: ['a']}],
+    [{pinning: false, pinnedWorkspaceIds: ['a']}, {...defaults, pinning: false, pinnedWorkspaceIds: ['a']}],
   ]) {
     assert.deepEqual(Config({preferences: {workspace}}).preferences.get().workspace, expected);
   }

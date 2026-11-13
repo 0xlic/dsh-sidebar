@@ -55,10 +55,10 @@ function normalize(value) {
   if (workspace !== null && typeof workspace === 'object' &&
       (Object.getPrototypeOf(workspace) === Object.prototype || Object.getPrototypeOf(workspace) === null)) {
     out.workspace = {
-      dynamicSort: workspace.dynamicSort === true,
-      ...(Object.hasOwn(workspace, 'pinning') ? {pinning: workspace.pinning === true} : {}),
+      dynamicSort: workspace.dynamicSort !== false,
+      pinning: workspace.pinning !== false,
       ...(Object.hasOwn(workspace, 'onlyPinned') ? {onlyPinned: workspace.onlyPinned === true} : {}),
-      ...(Object.hasOwn(workspace, 'activeIndicator') ? {activeIndicator: workspace.activeIndicator === true} : {}),
+      activeIndicator: workspace.activeIndicator !== false,
       collapseOneClick: workspace.collapseOneClick !== false,
       ...(Object.hasOwn(workspace, 'pinnedWorkspaceIds') ? {
         pinnedWorkspaceIds: [...new Set((Array.isArray(workspace.pinnedWorkspaceIds) ? workspace.pinnedWorkspaceIds : [])
@@ -426,8 +426,8 @@ return {
     ctx.effect(() => () => { live = false; source.dispose(); });
     async function toggleWorkspacePin(workspaceId) {
       const current = source.getSnapshot();
-      if (!live || !current.writable || !current.preferences.workspace?.pinning) return;
-      const workspace = current.preferences.workspace;
+      const workspace = current.preferences.workspace || {};
+      if (!live || !current.writable || workspace.pinning === false) return;
       const ids = workspace.pinnedWorkspaceIds || [];
       const pinnedWorkspaceIds = ids.includes(workspaceId) ? ids.filter(id => id !== workspaceId) : [...ids, workspaceId];
       const accepted = await save({...current.preferences, workspace: {...workspace, pinnedWorkspaceIds}});
@@ -529,10 +529,10 @@ return {
               return h(Component, props);
             }
             return h(WorkspaceProjection, {...props, component: Component,
-              active: enabled && preferences.workspace?.dynamicSort === true,
+              active: enabled && preferences.workspace?.dynamicSort !== false,
               onlyPinned: enabled && preferences.workspace?.onlyPinned === true,
-              pinning: enabled && preferences.workspace?.pinning === true,
-              activeIndicator: enabled && preferences.workspace?.activeIndicator === true,
+              pinning: enabled && preferences.workspace?.pinning !== false,
+              activeIndicator: enabled && preferences.workspace?.activeIndicator !== false,
               collapseOneClick: enabled && preferences.workspace?.collapseOneClick !== false,
               pinnedWorkspaceIds: preferences.workspace?.pinnedWorkspaceIds || EMPTY_WORKSPACE_PINS});
           }
@@ -924,21 +924,23 @@ return {
               h('div', {className: 'dshsb-setting-copy', id: `${panelId}-activity-label`}, t('activeIndicator'),
                 h('span', {className: 'dshsb-setting-hint', id: `${panelId}-activity-hint`}, t('activeIndicatorHint'))),
               h('button', {type: 'button', className: 'dshsb-switch', role: 'switch', disabled: !writable,
-                'aria-checked': state.workspace?.activeIndicator === true,
+                'aria-checked': state.workspace?.activeIndicator !== false,
                 'aria-labelledby': `${panelId}-activity-label`, 'aria-describedby': `${panelId}-activity-hint`,
                 onClick: () => {
                   const current = source.getSnapshot().preferences;
-                  void save({...current, workspace: {...current.workspace, activeIndicator: current.workspace?.activeIndicator !== true}});
+                  const enabled = current.workspace?.activeIndicator !== false;
+                  void save({...current, workspace: {...current.workspace, activeIndicator: !enabled}});
                 }}, h('span', {'aria-hidden': true}))),
             h('div', {className: 'dshsb-row'},
               h('div', {className: 'dshsb-setting-copy', id: `${panelId}-pin-label`}, t('pinWorkspace'),
                 h('span', {className: 'dshsb-setting-hint', id: `${panelId}-pin-hint`}, t('pinHint'))),
               h('button', {type: 'button', className: 'dshsb-switch', role: 'switch', disabled: !writable,
-                'aria-checked': state.workspace?.pinning === true,
+                'aria-checked': state.workspace?.pinning !== false,
                 'aria-labelledby': `${panelId}-pin-label`, 'aria-describedby': `${panelId}-pin-hint`,
                 onClick: () => {
                   const current = source.getSnapshot().preferences;
-                  void save({...current, workspace: {...current.workspace, pinning: current.workspace?.pinning !== true}});
+                  const enabled = current.workspace?.pinning !== false;
+                  void save({...current, workspace: {...current.workspace, pinning: !enabled}});
                 }}, h('span', {'aria-hidden': true}))),
             h('div', {className: 'dshsb-row'},
               h('div', {className: 'dshsb-setting-copy', id: `${panelId}-collapse-one-click-label`}, t('collapseOneClick'),
@@ -957,11 +959,12 @@ return {
                 h('span', {id: `${panelId}-dynamic-label`}, t('dynamicSort')),
                 h('span', {className: 'dshsb-setting-hint', id: `${panelId}-dynamic-hint`}, t('dynamicSortHint'))),
               h('button', {type: 'button', className: 'dshsb-switch', role: 'switch', disabled: !writable,
-                'aria-checked': state.workspace?.dynamicSort === true,
+                'aria-checked': state.workspace?.dynamicSort !== false,
                 'aria-labelledby': `${panelId}-dynamic-label`, 'aria-describedby': `${panelId}-dynamic-hint`,
                 onClick: () => {
                   const current = source.getSnapshot().preferences;
-                  void save({...current, workspace: {...current.workspace, dynamicSort: current.workspace?.dynamicSort !== true}});
+                  const enabled = current.workspace?.dynamicSort !== false;
+                  void save({...current, workspace: {...current.workspace, dynamicSort: !enabled}});
                 }}, h('span', {'aria-hidden': true}))))));
     }
     ctx.slots.inject('settings.section', () => ctx.slots.register({

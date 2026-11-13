@@ -29,13 +29,17 @@ test('normalization rejects malformed data and discards legacy hidden preference
     assert.deepEqual(normalize(value), {sidebar:{order:[]},settings:{order:[]}});
   }
 });
-test('active workspace indicator is opt-in, strictly boolean and retained by other preference changes', () => {
-  for (const activeIndicator of [true, false, 'true', 1, null]) {
-    const state = normalize({workspace: {activeIndicator, pinning: true}});
-    assert.equal(state.workspace.activeIndicator, activeIndicator === true);
-    assert.equal(rename(state, 'sidebar', 'a', 'A').workspace.activeIndicator, activeIndicator === true);
+test('workspace switches default on and only an explicit false disables them', () => {
+  assert.deepEqual(normalize({workspace: {}}).workspace, {
+    dynamicSort: true, pinning: true, activeIndicator: true, collapseOneClick: true,
+  });
+  for (const field of ['dynamicSort', 'pinning', 'activeIndicator', 'collapseOneClick']) {
+    for (const value of [false, true, 'false', 0, 1, null, undefined]) {
+      const state = normalize({workspace: {[field]: value}});
+      assert.equal(state.workspace[field], value !== false, `${field} with ${String(value)}`);
+      assert.equal(rename(state, 'sidebar', 'a', 'A').workspace[field], value !== false);
+    }
   }
-  assert.equal(Object.hasOwn(normalize({workspace: {}}).workspace, 'activeIndicator'), false);
 });
 
 test('workspace normalization is opt-in, accepts only plain objects and uses strict booleans', () => {
@@ -45,11 +49,11 @@ test('workspace normalization is opt-in, accepts only plain objects and uses str
     assert.deepEqual(normalize({...legacy, workspace}), legacy);
   }
   for (const dynamicSort of [undefined, null, false, 0, 1, 'true', 'false', [], {}, new Boolean(true)]) {
-    assert.deepEqual(normalize({...legacy, workspace: {dynamicSort, pinned: ['a']}}), {...legacy, workspace: {dynamicSort: false, collapseOneClick: true}});
+    assert.deepEqual(normalize({...legacy, workspace: {dynamicSort, pinned: ['a']}}), {...legacy, workspace: {dynamicSort: dynamicSort !== false, pinning: true, activeIndicator: true, collapseOneClick: true}});
   }
   for (const workspace of [{dynamicSort: true, extra: 'discard'}, Object.assign(Object.create(null), {dynamicSort: true})]) {
     const next = normalize({...legacy, workspace});
-    assert.deepEqual(next, {...legacy, workspace: {dynamicSort: true, collapseOneClick: true}});
+    assert.deepEqual(next, {...legacy, workspace: {dynamicSort: true, pinning: true, activeIndicator: true, collapseOneClick: true}});
     assert.deepEqual(normalize(next), next);
     assert.notEqual(next.workspace, workspace);
   }
@@ -64,27 +68,33 @@ test('one-click collapse defaults on and only an explicit false disables it', ()
   assert.equal(move(state, 'sidebar', rows, 'b', -1).workspace.collapseOneClick, false);
 });
 test('workspace pinning fields remain optional and normalize malformed values and duplicate IDs', () => {
-  assert.deepEqual(normalize({workspace: {}}).workspace, {dynamicSort: false, collapseOneClick: true});
+  assert.deepEqual(normalize({workspace: {}}).workspace, {dynamicSort: true, pinning: true, activeIndicator: true, collapseOneClick: true});
   for (const pinning of [undefined, null, false, 0, 1, 'true', 'false', [], {}, new Boolean(true)]) {
-    assert.deepEqual(normalize({workspace: {pinning}}).workspace, {dynamicSort: false, collapseOneClick: true, pinning: false});
+    assert.deepEqual(normalize({workspace: {pinning}}).workspace, {dynamicSort: true, pinning: pinning !== false, activeIndicator: true, collapseOneClick: true});
   }
-  assert.deepEqual(normalize({workspace: {pinning: true}}).workspace, {dynamicSort: false, collapseOneClick: true, pinning: true});
+  assert.deepEqual(normalize({workspace: {pinning: true}}).workspace, {dynamicSort: true, pinning: true, activeIndicator: true, collapseOneClick: true});
   for (const pinnedWorkspaceIds of [undefined, null, true, 1, 'a', {}, new Set(['a'])]) {
-    assert.deepEqual(normalize({workspace: {pinnedWorkspaceIds}}).workspace, {dynamicSort: false, collapseOneClick: true, pinnedWorkspaceIds: []});
+    assert.deepEqual(normalize({workspace: {pinnedWorkspaceIds}}).workspace, {dynamicSort: true, pinning: true, activeIndicator: true, collapseOneClick: true, pinnedWorkspaceIds: []});
   }
   const workspace = {pinning: false, pinnedWorkspaceIds: ['a', '', null, 'b', 'a', 42, '  ', {}, ['c'], 'b', 'unloaded']};
   const before = structuredClone(workspace), next = normalize({workspace});
-  assert.deepEqual(next.workspace, {dynamicSort: false, collapseOneClick: true, pinning: false, pinnedWorkspaceIds: ['a', 'b', 'unloaded']});
+  assert.deepEqual(next.workspace, {dynamicSort: true, pinning: false, activeIndicator: true, collapseOneClick: true, pinnedWorkspaceIds: ['a', 'b', 'unloaded']});
   assert.deepEqual(normalize(next), next);
   assert.deepEqual(workspace, before);
   assert.notEqual(next.workspace.pinnedWorkspaceIds, workspace.pinnedWorkspaceIds);
   const nullPrototype = Object.assign(Object.create(null), {pinning: true, pinnedWorkspaceIds: ['a', 'a']});
-  assert.deepEqual(normalize({workspace: nullPrototype}).workspace, {dynamicSort: false, collapseOneClick: true, pinning: true, pinnedWorkspaceIds: ['a']});
+  assert.deepEqual(normalize({workspace: nullPrototype}).workspace, {dynamicSort: true, pinning: true, activeIndicator: true, collapseOneClick: true, pinnedWorkspaceIds: ['a']});
 });
 test('rename, move and reorder preserve workspace settings without mutating their input', () => {
   for (const dynamicSort of [false, true]) for (const pinning of [undefined, false, true]) {
     const workspace = {dynamicSort, ...(pinning === undefined ? {} : {pinning, pinnedWorkspaceIds: ['a', 'unloaded']})};
-    const state = normalize({workspace}), before = structuredClone(state), expected = {...workspace, collapseOneClick: true};
+    const state = normalize({workspace}), before = structuredClone(state), expected = {
+      dynamicSort: dynamicSort !== false,
+      pinning: pinning !== false,
+      activeIndicator: true,
+      collapseOneClick: true,
+      ...(pinning === undefined ? {} : {pinnedWorkspaceIds: ['a', 'unloaded']}),
+    };
     for (const group of ['sidebar', 'settings']) {
       for (const next of [
         rename(state, group, 'a', 'A'),

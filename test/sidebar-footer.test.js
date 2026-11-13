@@ -429,36 +429,36 @@ test('invalid or unavailable panel storage falls back safely and never blocks fo
   assert.equal(panelRegion(env.page(), 'settings').props.hidden, false);
 });
 
-test('workspace settings folds independently and its switches persist without clearing each other', async () => {
+test('workspace settings open by default and their switches persist without clearing each other', async () => {
   const storage = memoryStorage(), env = runtime(undefined, storage);
   let tree = env.page();
   assert.equal(panelRegion(tree, 'workspace').props.hidden, true);
   const pinToggle = () => findElement(env.page(), node => node.props?.['aria-labelledby'] === 'test-panels-pin-label');
   assert.equal(pinToggle().props.disabled, false);
-  assert.equal(pinToggle().props['aria-checked'], false);
+  assert.equal(pinToggle().props['aria-checked'], true, 'pinning defaults on');
   pinToggle().props.onClick(); await Promise.resolve();
-  assert.equal(env.writes.at(-1).workspace.pinning, true);
+  assert.equal(env.writes.at(-1).workspace.pinning, false);
   const collapseSwitch = () => findElement(env.page(), node => node.props?.['aria-labelledby'] === 'test-panels-collapse-one-click-label');
   assert.equal(collapseSwitch().props.disabled, false);
-  assert.equal(collapseSwitch().props['aria-checked'], true, 'one-click collapse is on by default');
+  assert.equal(collapseSwitch().props['aria-checked'], true, 'one-click collapse defaults on');
   collapseSwitch().props.onClick(); await Promise.resolve();
   assert.equal(env.writes.at(-1).workspace.collapseOneClick, false);
-  assert.equal(env.writes.at(-1).workspace.pinning, true, 'the switch merges with pinning');
+  assert.equal(env.writes.at(-1).workspace.pinning, false, 'the switch merges with pinning');
   disclosure(tree, 'workspace').props.onClick();
   tree = env.page();
   assert.equal(panelRegion(tree, 'workspace').props.hidden, false);
   const toggle = () => findElement(env.page(), node => node.props?.['aria-labelledby'] === 'test-panels-dynamic-label');
-  assert.equal(toggle().props['aria-checked'], false);
+  assert.equal(toggle().props['aria-checked'], true, 'dynamic sorting defaults on');
   toggle().props.onClick();
   await Promise.resolve();
-  assert.equal(env.writes.at(-1).workspace.dynamicSort, true);
-  assert.equal(toggle().props['aria-checked'], true);
+  assert.equal(env.writes.at(-1).workspace.dynamicSort, false);
+  assert.equal(toggle().props['aria-checked'], false);
   assert.equal(panelRegion(runtime(undefined, storage).page(), 'workspace').props.hidden, false);
   toggle().props.onClick(); await Promise.resolve();
-  assert.equal(env.writes.at(-1).workspace.dynamicSort, false);
-  assert.equal(env.writes.at(-1).workspace.pinning, true);
-  pinToggle().props.onClick(); await Promise.resolve();
+  assert.equal(env.writes.at(-1).workspace.dynamicSort, true);
   assert.equal(env.writes.at(-1).workspace.pinning, false);
+  pinToggle().props.onClick(); await Promise.resolve();
+  assert.equal(env.writes.at(-1).workspace.pinning, true);
   env.form.update({writable:false});
   assert.equal(toggle().props.disabled,true);
   assert.equal(pinToggle().props.disabled,true);
@@ -467,8 +467,6 @@ test('workspace settings folds independently and its switches persist without cl
 
 test('active workspace switch persists independently, reuses native StateDot and updates with live activity', async () => {
   const env = runtime();
-  findElement(env.page(), node => node.props?.['aria-labelledby'] === 'test-panels-pin-label').props.onClick();
-  await Promise.resolve();
   let statuses = new Map([['a1', {running: true}]]);
   const snapshot = {items: [{workspaceId: 'a', sessionIds: ['a1']}], archivedSessionIds: []};
   const props = {useWorkspaces: select => select(snapshot), useSessions: select => select({byId: {a1: {}}}),
@@ -481,12 +479,10 @@ test('active workspace switch persists independently, reuses native StateDot and
     return browser.props.renderFactorySlot('contextMenu.button', owner);
   };
   const marker = tree => findElement(tree, node => node.props?.className === 'dshsb-workspace-activity');
-  assert.equal(marker(render()), undefined);
   const toggle = () => findElement(env.page(), node => node.props?.['aria-labelledby'] === 'test-panels-activity-label');
-  assert.equal(toggle().props['aria-checked'], false);
-  toggle().props.onClick(); await Promise.resolve();
-  assert.equal(env.writes.at(-1).workspace.activeIndicator, true);
-  assert.equal(env.writes.at(-1).workspace.pinning, true);
+  assert.equal(toggle().props['aria-checked'], true, 'active indicator defaults on');
+  statuses = new Map([['a1', {running: true}]]);
+  assert.equal(marker(render()).props.children.props.state, 'ongoing');
   const pin = findElement(render(), node => node.props?.className?.includes('dshsb-workspace-pin-action'));
   await pin.props.onClick({stopPropagation() {}});
   assert.equal(env.writes.at(-1).workspace.pinnedWorkspaceIds[0], 'a');
@@ -510,22 +506,21 @@ test('workspace adapter changes only projected item order and restores original 
   const props = {useWorkspaces: selector => selector(snapshot),useSessions: selector=>selector(sessions),useStore:selector=>selector(view),
     actions:{native:true},renderSlot(){},insertWorkspaceBefore(){throw Error('Must not write registry');}};
   const project = () => { const bridge = env.browser.component(props); return bridge.type(bridge.props); };
-  assert.equal(project().props.useWorkspaces(x=>x),snapshot);
   const switchNode = () => findElement(env.page(), node => node.props?.['aria-labelledby']==='test-panels-dynamic-label');
-  switchNode().props.onClick(); await Promise.resolve();
+  const ids = () => Array.from(project().props.useWorkspaces(x=>x.items),w=>w.workspaceId);
+  assert.deepEqual(ids(),['b','a'],'dynamic sorting is on by default');
   const projected = project();
   assert.equal(projected.props.component,env.Browser);
-  assert.deepEqual(Array.from(projected.props.useWorkspaces(x=>x.items),w=>w.workspaceId),['b','a']);
   for(const key of ['actions','renderSlot','insertWorkspaceBefore','useSessions','useStore']) assert.equal(projected.props[key],props[key]);
   assert.equal(env.browser.store.native,true); assert.equal(env.browser.children.native,true);
   sessions = {byId:{a:{updatedAt:30},b:{updatedAt:20}}};
-  assert.equal(project().props.useWorkspaces(x=>x),snapshot);
+  assert.deepEqual(ids(),['a','b']);
   sessions = {byId:{a:{updatedAt:10},b:{updatedAt:20}}};
   for(const grouping of ['flat','workspace-tree']) {view={groupBy:grouping,orderBy:'updated'};assert.equal(project().props.useWorkspaces(x=>x),snapshot);}
   view={groupBy:'workspace',orderBy:'manual'};assert.equal(project().props.useWorkspaces(x=>x),snapshot);
   view={groupBy:'workspace',orderBy:'updated'};
   switchNode().props.onClick(); await Promise.resolve();
-  assert.equal(project().props.useWorkspaces(x=>x),snapshot);
+  assert.equal(project().props.useWorkspaces(x=>x),snapshot,'turning dynamic sorting off restores the native snapshot');
   for(const cleanup of env.cleanups.reverse()) cleanup();
   assert.equal(env.browser.component,env.Browser);
 });
@@ -567,8 +562,6 @@ test('workspace and filter menu preserve LocaleRuntime receiver for snapshot, su
 
 test('workspace filter menu follows archive group, toggles durably, and leaves native actions intact', async () => {
   const env = runtime();
-  findElement(env.page(), node => node.props?.['aria-labelledby'] === 'test-panels-pin-label').props.onClick();
-  await Promise.resolve();
   await workspacePinRow(env).button.props.onClick({stopPropagation() {}});
   const initialWrites = env.writes.length;
   let groupBy = 'workspace', closed = 0;
@@ -659,10 +652,8 @@ const clickWorkspacePin = (env, id) => workspacePinRow(env, id).button.props.onC
 
 test('workspace row pin toggles current state, persists IDs and never registers a menu action', async () => {
   const env = runtime();
-  assert.equal(workspacePinRow(env).button, undefined);
-  findElement(env.page(), node => node.props?.['aria-labelledby'] === 'test-panels-pin-label').props.onClick();
-  await Promise.resolve();
   const button = workspacePinRow(env).button;
+  assert.ok(button, 'pinning defaults on');
   assert.equal(button.props['aria-pressed'], false);
   assert.equal(button.props.title, 'pinAction');
   await button.props.onClick({stopPropagation() {}});
@@ -695,8 +686,6 @@ test('workspace row pin toggles current state, persists IDs and never registers 
 test('saved workspace pins reach the browser projection while native session state and callbacks pass through', async () => {
   const env=runtime();
   const toggle=key=>findElement(env.page(),node=>node.props?.['aria-labelledby']===`test-panels-${key}-label`);
-  toggle('dynamic').props.onClick(); await Promise.resolve();
-  toggle('pin').props.onClick(); await Promise.resolve();
   const snapshot={items:[{workspaceId:'a',sessionIds:['a1']},{workspaceId:'b',sessionIds:['b1']}],
     pinnedSessionIds:['a1'],archivedSessionIds:[],phase:'ready'};
   const props={useWorkspaces:selector=>selector(snapshot),useSessions:selector=>selector({byId:{a1:{updatedAt:1},b1:{updatedAt:2}}}),
@@ -718,8 +707,6 @@ test('saved workspace pins reach the browser projection while native session sta
 
 test('workspace row pin save failure is surfaced and rolls back the optimistic state', async () => {
   const env=runtime();
-  findElement(env.page(),node=>node.props?.['aria-labelledby']==='test-panels-pin-label').props.onClick();
-  await Promise.resolve();
   env.form.set=async()=>false;
   await clickWorkspacePin(env, 'a');
   assert.equal(workspacePinRow(env).button.props['aria-pressed'], false);
@@ -729,8 +716,6 @@ test('workspace row pin save failure is surfaced and rolls back the optimistic s
 
 test('workspace pin is a third native-styled row action, suppresses parent click/drag and leaves original controls intact', async () => {
   const env = runtime();
-  findElement(env.page(), node => node.props?.['aria-labelledby'] === 'test-panels-pin-label').props.onClick();
-  await Promise.resolve();
   let row = workspacePinRow(env);
   assert.ok(row.button);
   const style = findElement(row.element, node => node.type === 'style');
@@ -870,8 +855,6 @@ test('workspace header places one-click collapse-all immediately before search a
 
 test('native workspace account reconciliation cannot retrigger sorting in an update loop', async () => {
   const env = runtime();
-  findElement(env.page(), node => node.props?.['aria-labelledby'] === 'test-panels-dynamic-label').props.onClick();
-  await Promise.resolve();
   const snapshot = {items: [{workspaceId:'a',sessionIds:['a']},{workspaceId:'b',sessionIds:['b']}]};
   let byId = {a:{updatedAt:1},b:{updatedAt:2}};
   let view = {groupBy:'workspace',orderBy:'updated',groupExpansion:{},sessionOrderByAccount:{}};
