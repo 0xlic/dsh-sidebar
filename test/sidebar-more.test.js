@@ -1,9 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  MORE_ID, OWN_ID, PLUGINS_ALIAS, isProtected, withMore, sidebarView,
-  viewPanelId, realPanelId, normalize, move, toggle,
-} from '../src/model.js';
+import * as model from '../src/model.js';
+const {normalize, arrange, move, reorder, rename, sidebarRows, splitSidebar, OWN_ID, MORE_ID} = model;
 
 const ids = rows => rows.map(row => row.id);
 const rows = [
@@ -11,168 +9,172 @@ const rows = [
   {id: 'plugins', label: 'Plugins', order: 10, icon: 'plugins-icon'},
   {id: 'files', label: 'Files', order: 20, icon: 'files-icon'},
 ];
-const preference = (order = [], hidden = []) => ({order, hidden});
+const marker = 'dsh-sidebar:more';
+const footer = 'dsh-sidebar:footer:devices';
 const roundtrip = value => normalize(JSON.parse(JSON.stringify(value)));
+const partition = (native, preference) => {
+  const {visible, folded} = splitSidebar(native, preference);
+  return {visible: ids(visible), folded: ids(folded)};
+};
 
-test('More and the manager are protected, but ordinary panels and the plugins alias are not', () => {
-  assert.equal(MORE_ID, 'dsh-sidebar:more');
-  assert.equal(OWN_ID, 'dsh-sidebar');
-  assert.equal(PLUGINS_ALIAS, 'dsh-sidebar:panel:plugins');
-  for (const id of [MORE_ID, OWN_ID]) assert.equal(isProtected(id), true);
-  for (const id of ['chat', 'plugins', PLUGINS_ALIAS, '', undefined]) {
-    assert.equal(isProtected(id), false);
-  }
+test('model exports ordering, renaming, sidebar boundary and component adaptation', () => {
+  assert.deepEqual(Object.keys(model).sort(), [
+    'OWN_ID', 'MORE_ID', 'GROUPS', 'menuLabel', 'rename', 'replaceComponent', 'normalize', 'arrange', 'move', 'reorder', 'sidebarRows', 'splitSidebar',
+  ].sort());
+  assert.equal(MORE_ID, marker);
 });
 
-test('withMore appends one localized marker without mutating rows or duplicating stale markers', () => {
-  const input = [{id: MORE_ID, label: 'Old'}, ...rows, {id: MORE_ID, label: 'Duplicate'}];
-  const before = structuredClone(input);
-  const result = withMore(input, '更多');
-  assert.deepEqual(ids(result), ['chat', 'plugins', 'files', MORE_ID]);
-  assert.deepEqual(result.at(-1), {id: MORE_ID, label: '更多', order: Infinity});
-  assert.deepEqual(input, before);
-  assert.equal(result[0], rows[0]);
-  assert.equal(withMore([])[0].label, 'More');
-});
-
-test('default view sorts real rows and places More at the bottom', () => {
-  const view = sidebarView([rows[2], rows[0], rows[1]], preference());
-  assert.deepEqual(ids(view.direct), ['chat', 'plugins', 'files']);
-  assert.deepEqual(view.folded, []);
-  assert.deepEqual(ids(view.panels), ['chat', PLUGINS_ALIAS, 'files', MORE_ID]);
-  assert.deepEqual(view.unpinned, [MORE_ID]);
-  assert.equal(view.panels.at(-1).label, 'More');
-});
-
-test('custom marker position splits real IDs while shell panels and unpinned use aliases', () => {
-  const view = sidebarView(rows, preference(['files', MORE_ID, 'plugins', 'chat']), '其他');
-  assert.deepEqual(ids(view.direct), ['files']);
-  assert.deepEqual(ids(view.folded), ['plugins', 'chat']);
-  assert.deepEqual(ids(view.panels), ['files', MORE_ID, PLUGINS_ALIAS, 'chat']);
-  assert.deepEqual(view.unpinned, [PLUGINS_ALIAS, 'chat', MORE_ID]);
-  assert.equal(view.panels.find(row => row.id === MORE_ID).label, '其他');
-  assert.equal(view.folded[0], rows[1]);
-  assert.equal(view.panels.find(row => row.id === PLUGINS_ALIAS).icon, 'plugins-icon');
-});
-
-test('marker may be first, folding every real entry without becoming a real entry', () => {
-  const view = sidebarView(rows, preference([MORE_ID, 'chat', 'plugins', 'files']));
-  assert.deepEqual(view.direct, []);
-  assert.deepEqual(ids(view.folded), ['chat', 'plugins', 'files']);
-  assert.deepEqual(view.unpinned, ['chat', PLUGINS_ALIAS, 'files', MORE_ID]);
-  assert.equal(view.panels.filter(row => row.id === MORE_ID).length, 1);
-});
-
-test('hidden entries occupy neither area, shell panels, nor unpinned IDs', () => {
-  const view = sidebarView(rows, preference(['chat', MORE_ID, 'plugins', 'files'], ['chat', 'plugins']));
-  assert.deepEqual(view.direct, []);
-  assert.deepEqual(ids(view.folded), ['files']);
-  assert.deepEqual(ids(view.panels), [MORE_ID, 'files']);
-  assert.deepEqual(view.unpinned, ['files', MORE_ID]);
-});
-
-test('normalization removes protected hidden IDs in both groups while preserving marker order', () => {
+test('legacy config retains one sidebar boundary but removes projected footer, hidden state and boundary names', () => {
   const raw = {
-    sidebar: {order: ['chat', MORE_ID, MORE_ID, 'plugins', null], hidden: [MORE_ID, OWN_ID, 'plugins', 'plugins', 7]},
-    settings: {order: [MORE_ID, OWN_ID], hidden: [OWN_ID, MORE_ID, 'files']},
+    sidebar: {
+      order: ['files', marker, 'plugins', footer, 'chat', marker, 'unloaded'],
+      hidden: ['chat', 'plugins', 'files', OWN_ID],
+      names: {[marker]: 'More', [footer]: 'Devices', plugins: '扩展', unloaded: '稍后加载'},
+    },
+    settings: {order: [marker, OWN_ID, footer, 'models'], hidden: ['models'], names: {models: '模型', [marker]: '更多', [footer]: '旧投影'}},
   };
   const before = structuredClone(raw);
-  const state = normalize(raw);
-  assert.deepEqual(state.sidebar, preference(['chat', MORE_ID, 'plugins'], ['plugins']));
-  assert.deepEqual(state.settings, preference([MORE_ID, OWN_ID], ['files']));
+  const state = roundtrip(raw);
+  assert.deepEqual(state.sidebar, {order: ['files', marker, 'plugins', 'chat', 'unloaded'], names: {plugins: '扩展', unloaded: '稍后加载'}});
+  assert.deepEqual(state.settings, {order: [OWN_ID, 'models'], names: {models: '模型'}});
+  assert.deepEqual(ids(arrange(rows, state.sidebar)), ['files', 'plugins', 'chat']);
+  assert.equal(arrange(rows, state.sidebar)[1].label, '扩展');
+  assert.deepEqual(partition(rows, state.sidebar), {visible: ['files'], folded: ['plugins', 'chat']});
   assert.deepEqual(raw, before);
+  assert.deepEqual(roundtrip(state), state);
 });
 
-test('toggle cannot hide More or manager and raw hidden marker cannot remove the split', () => {
-  const state = normalize({sidebar: preference(['chat', MORE_ID, 'plugins', 'files'])});
+test('only the sorting catalog appends one localized virtual boundary at the default end', () => {
+  const before = structuredClone(rows);
+  const catalog = sidebarRows(rows);
+  assert.deepEqual(ids(catalog), ['chat', 'plugins', 'files', marker]);
+  assert.equal(catalog.at(-1).label, 'More');
+  assert.equal(catalog.at(-1).order, Infinity);
+  rows.forEach((row, index) => assert.equal(catalog[index], row));
+  assert.equal(sidebarRows(rows, '更多').at(-1).label, '更多');
+  assert.deepEqual(ids(sidebarRows([...catalog, {id: marker, label: 'Duplicate'}])), ids(catalog));
+  assert.deepEqual(rows, before);
+  const preference = normalize(null).sidebar;
+  assert.deepEqual(ids(arrange(rows, preference)), ids(rows));
+  assert.deepEqual(partition(rows, preference), {visible: ids(rows), folded: []});
+});
+
+test('boundary at the first, middle and last positions partitions all native rows exactly once', () => {
+  for (const [order, visible, folded] of [
+    [[marker, 'chat', 'plugins', 'files'], [], ['chat', 'plugins', 'files']],
+    [['files', marker, 'plugins', 'chat'], ['files'], ['plugins', 'chat']],
+    [['files', 'plugins', 'chat', marker], ['files', 'plugins', 'chat'], []],
+  ]) {
+    const preference = normalize({sidebar: {order, hidden: ids(rows)}}).sidebar;
+    assert.deepEqual(partition(rows, preference), {visible, folded});
+    assert.deepEqual(new Set([...visible, ...folded]), new Set(ids(rows)));
+    assert.equal(arrange(rows, preference).some(row => row.id === marker), false);
+  }
+});
+
+test('empty lists retain a sortable boundary without rendering it as a menu', () => {
+  for (const order of [[], [marker], ['unloaded', marker]]) {
+    const preference = normalize({sidebar: {order}}).sidebar;
+    assert.deepEqual(arrange([], preference), []);
+    assert.deepEqual(ids(sidebarRows([])), [marker]);
+    assert.deepEqual(partition([], preference), {visible: [], folded: []});
+  }
+});
+
+test('newly registered entries follow an explicit saved boundary but precede an unsaved default boundary', () => {
+  const native = [...rows, {id: 'new-plugin', label: 'New', order: 30}];
+  assert.deepEqual(partition(native, normalize(null).sidebar), {visible: ids(native), folded: []});
+  assert.deepEqual(partition(native, normalize({sidebar: {order: ['chat', 'plugins', 'files', marker]}}).sidebar), {
+    visible: ids(rows), folded: ['new-plugin'],
+  });
+  const saved = roundtrip({sidebar: {order: ['chat', marker, 'unloaded']}});
+  assert.deepEqual(partition([...native, {id: 'unloaded', label: 'Loaded', order: -10}], saved.sidebar), {
+    visible: ['chat'], folded: ['unloaded', 'plugins', 'files', 'new-plugin'],
+  });
+});
+
+test('moving real entries across the boundary persists the partition and unloaded identities after restart', () => {
+  const state = normalize({sidebar: {order: ['chat', marker, 'plugins', footer, 'files', 'unloaded'], names: {plugins: '扩展'}}});
+  const before = structuredClone(state);
+  const catalog = sidebarRows(rows);
+  const expanded = roundtrip(move(state, 'sidebar', catalog, 'plugins', -1));
+  assert.deepEqual(expanded.sidebar, {order: ['chat', 'plugins', marker, 'files', 'unloaded'], names: {plugins: '扩展'}});
+  assert.deepEqual(partition(rows, expanded.sidebar), {visible: ['chat', 'plugins'], folded: ['files']});
+  const folded = roundtrip(reorder(expanded, 'sidebar', catalog, 'chat', marker, true));
+  assert.deepEqual(folded.sidebar.order, ['plugins', marker, 'chat', 'files', 'unloaded']);
+  assert.deepEqual(partition(rows, folded.sidebar), {visible: ['plugins'], folded: ['chat', 'files']});
+  assert.equal(splitSidebar(rows, folded.sidebar).visible[0].label, '扩展');
+  assert.deepEqual(state, before);
+});
+
+test('the boundary itself supports arrow moves and drag reorder to both ends', () => {
+  const catalog = sidebarRows(rows);
+  const initial = normalize(null);
+  const moved = move(initial, 'sidebar', catalog, marker, -1);
+  assert.deepEqual(partition(rows, moved.sidebar), {visible: ['chat', 'plugins'], folded: ['files']});
+  const first = roundtrip(reorder(moved, 'sidebar', catalog, marker, 'chat'));
+  assert.deepEqual(first.sidebar.order, [marker, 'chat', 'plugins', 'files']);
+  assert.deepEqual(partition(rows, first.sidebar), {visible: [], folded: ids(rows)});
+  assert.deepEqual(move(first, 'sidebar', catalog, marker, -1), first);
+  const last = roundtrip(reorder(first, 'sidebar', catalog, marker, 'files', true));
+  assert.deepEqual(last.sidebar.order, ['chat', 'plugins', 'files', marker]);
+  assert.deepEqual(partition(rows, last.sidebar), {visible: ids(rows), folded: []});
+  assert.deepEqual(move(last, 'sidebar', catalog, marker, 1), last);
+  assert.deepEqual(initial, normalize(null));
+});
+
+test('folded native IDs, plugin entries, pin state, metadata and actions survive ordering and renaming', () => {
+  const action = () => {};
+  const metadata = {owner: 'native'};
+  const native = [...rows, {id: 'devices', label: 'Devices', order: 30, pinned: false, active: true, action, metadata}];
+  const state = rename(normalize({sidebar: {order: ['chat', marker, 'devices', 'plugins', 'files']}}), 'sidebar', 'devices', '设备');
+  const before = [...native];
+  const {visible, folded} = splitSidebar(native, state.sidebar);
+  assert.deepEqual(ids(visible), ['chat']);
+  assert.deepEqual(ids(folded), ['devices', 'plugins', 'files']);
+  assert.deepEqual(folded[0], {...native[3], label: '设备'});
+  assert.equal(folded[0].action, action);
+  assert.equal(folded[0].metadata, metadata);
+  assert.equal(folded[1], rows[1]);
+  assert.equal(folded[1].id, 'plugins');
+  assert.equal(folded.some(row => row.id === 'dsh-sidebar:panel:plugins'), false);
+  assert.deepEqual(ids(arrange(native, state.sidebar)), ['chat', 'devices', 'plugins', 'files']);
+  assert.deepEqual(native, before);
+  assert.equal(native[3].label, 'Devices');
+});
+
+test('arrange never filters actual rows or implicitly adds the sorting boundary', () => {
+  const actual = [...rows, {id: marker, label: 'Native More'}, {id: footer, label: 'Native extension'}];
+  const result = arrange(actual, {order: [], hidden: ids(actual)});
+  assert.equal(result.length, actual.length);
+  for (const row of actual) assert.equal(result.find(item => item.id === row.id), row);
+});
+
+test('native pin/unpin metadata is independent of the persisted More boundary', () => {
+  const native = rows.map((row, i) => ({...row, pinned: i !== 2}));
+  const preference = normalize({sidebar: {order: ['files', marker, 'plugins', 'chat']}}).sidebar;
+  const result = arrange(native, preference);
+  assert.deepEqual(ids(result.filter(row => row.pinned)), ['plugins', 'chat']);
+  assert.deepEqual(ids(result.filter(row => !row.pinned)), ['files']);
+  assert.deepEqual(partition(native, preference), {visible: ['files'], folded: ['plugins', 'chat']});
+  native[0] = {...native[0], pinned: false};
+  const updated = arrange(native, preference);
+  assert.deepEqual(ids(updated.filter(row => !row.pinned)), ['files', 'chat']);
+  assert.deepEqual(partition(native, preference), {visible: ['files'], folded: ['plugins', 'chat']});
+  assert.deepEqual(preference, {order: ['files', marker, 'plugins', 'chat']});
+});
+
+test('renaming cannot name the boundary or resurrect obsolete footer identities in either group', () => {
+  const initial = normalize({sidebar: {order: ['chat', marker, 'plugins']}});
   for (const group of ['sidebar', 'settings']) {
-    for (const id of [MORE_ID, OWN_ID]) assert.deepEqual(toggle(state, group, id), state);
+    for (const id of [marker, footer, 'dsh-sidebar:footer:']) {
+      assert.deepEqual(rename(initial, group, id, 'Old'), initial);
+    }
   }
-  const view = sidebarView(rows, preference([MORE_ID, 'chat', 'plugins', 'files'], [MORE_ID]));
-  assert.deepEqual(ids(view.folded), ['chat', 'plugins', 'files']);
-  assert.deepEqual(ids(view.panels), [MORE_ID, 'chat', PLUGINS_ALIAS, 'files']);
-  assert.ok(view.unpinned.includes(MORE_ID));
 });
 
-test('legacy saved orders without a marker keep More at the bottom, including new entries', () => {
-  for (const order of [['files', 'chat', 'plugins'], ['files'], []]) {
-    const state = roundtrip({sidebar: preference(order)});
-    const view = sidebarView(rows, state.sidebar);
-    assert.equal(view.panels.at(-1).id, MORE_ID);
-    assert.equal(view.direct.length, rows.length);
-    assert.deepEqual(view.folded, []);
-    assert.deepEqual(view.unpinned, [MORE_ID]);
-  }
-  assert.deepEqual(ids(sidebarView(rows, preference(['files'])).direct), ['files', 'chat', 'plugins']);
-});
-
-test('moving a panel across More persists folding and unfolding through JSON', () => {
-  const initial = normalize({sidebar: preference(['chat', 'plugins', MORE_ID, 'files', 'unloaded'])});
-  const before = structuredClone(initial);
-  const folded = roundtrip(move(initial, 'sidebar', withMore(rows), 'plugins', 1));
-  assert.deepEqual(folded.sidebar.order, ['chat', MORE_ID, 'plugins', 'files', 'unloaded']);
-  assert.deepEqual(ids(sidebarView(rows, folded.sidebar).direct), ['chat']);
-  assert.deepEqual(ids(sidebarView(rows, folded.sidebar).folded), ['plugins', 'files']);
-  const restored = roundtrip(move(folded, 'sidebar', withMore(rows), 'plugins', -1));
-  assert.deepEqual(restored, initial);
-  assert.deepEqual(ids(sidebarView(rows, restored.sidebar).direct), ['chat', 'plugins']);
-  assert.deepEqual(initial, before);
-});
-
-test('moving the marker changes the split and retains hidden and temporarily absent identities', () => {
-  const state = normalize({sidebar: preference(['chat', 'plugins', MORE_ID, 'files', 'unloaded'], ['plugins'])});
-  const next = roundtrip(move(state, 'sidebar', withMore(rows), MORE_ID, -1));
-  assert.deepEqual(next.sidebar.order, ['chat', MORE_ID, 'plugins', 'files', 'unloaded']);
-  assert.deepEqual(next.sidebar.hidden, ['plugins']);
-  assert.deepEqual(ids(sidebarView(rows, next.sidebar).folded), ['files']);
-  const visible = roundtrip(toggle(next, 'sidebar', 'plugins'));
-  assert.deepEqual(ids(sidebarView(rows, visible.sidebar).folded), ['plugins', 'files']);
-});
-
-test('plugins presentation alias roundtrips to the real route and icon key without persisting aliases', () => {
-  assert.equal(viewPanelId('plugins'), PLUGINS_ALIAS);
-  assert.equal(realPanelId(PLUGINS_ALIAS), 'plugins');
-  for (const id of ['chat', 'files', MORE_ID, OWN_ID]) {
-    assert.equal(viewPanelId(id), id);
-    assert.equal(realPanelId(id), id);
-  }
-  const state = roundtrip({sidebar: preference(['chat', MORE_ID, 'plugins', 'files'])});
-  const view = sidebarView(rows, state.sidebar);
-  const pluginPanel = view.panels.find(row => row.id === PLUGINS_ALIAS);
-  const original = rows.find(row => row.id === realPanelId(pluginPanel.id));
-  assert.equal(realPanelId(pluginPanel.id), 'plugins');
-  assert.equal(pluginPanel.icon, original.icon);
-  assert.equal(pluginPanel.label, original.label);
-  assert.deepEqual(view.folded.find(row => row.id === 'plugins'), original);
-  assert.equal(state.sidebar.order.includes(PLUGINS_ALIAS), false);
-  const hidden = roundtrip(toggle(state, 'sidebar', realPanelId(pluginPanel.id)));
-  assert.deepEqual(hidden.sidebar.hidden, ['plugins']);
-  assert.equal(sidebarView(rows, hidden.sidebar).panels.some(row => row.id === PLUGINS_ALIAS), false);
-});
-
-test('rc.5 shell filtering puts Plugins below More only in the menu, even when selected', () => {
-  const view = sidebarView(rows, preference(['chat', MORE_ID, 'plugins', 'files']));
-  const shellDirect = view.panels.filter(({id}) => id === 'plugins' || !view.unpinned.includes(id));
-  const shellMenu = view.panels.filter(({id}) => id !== 'plugins')
-    .map(row => ({...row, pinned: !view.unpinned.includes(row.id), active: row.id === viewPanelId('plugins')}));
-  const foldedMenu = shellMenu.filter(row => !row.pinned && row.id !== MORE_ID);
-  assert.deepEqual(ids(shellDirect), ['chat']);
-  assert.deepEqual(foldedMenu.map(row => realPanelId(row.id)), ['plugins', 'files']);
-  assert.equal(foldedMenu[0].active, true);
-});
-
-test('new entries after a saved More marker go into its menu without being hidden', () => {
-  const view = sidebarView([...rows, {id:'new-plugin',label:'New',order:30}], preference(['chat', 'plugins', 'files', MORE_ID]));
-  assert.deepEqual(ids(view.direct), ['chat','plugins','files']);
-  assert.deepEqual(ids(view.folded), ['new-plugin']);
-});
-
-test('all hidden or absent real rows still leave a More panel and unpinned marker for shell visibility', () => {
-  for (const input of [rows, []]) {
-    const view = sidebarView(input, preference([MORE_ID, 'chat', 'plugins', 'files'], ['chat', 'plugins', 'files', MORE_ID]));
-    assert.deepEqual(view.direct, []);
-    assert.deepEqual(view.folded, []);
-    assert.deepEqual(ids(view.panels), [MORE_ID]);
-    assert.deepEqual(view.unpinned, [MORE_ID]);
-  }
+test('settings normalization never retains a boundary or a boundary name', () => {
+  const state = roundtrip({settings: {order: ['models', marker, OWN_ID, marker], names: {[marker]: '更多', models: '模型'}}});
+  assert.deepEqual(state.settings, {order: ['models', OWN_ID], names: {models: '模型'}});
+  assert.deepEqual(ids(arrange([{id: OWN_ID}, {id: 'models'}], state.settings)), ['models', OWN_ID]);
 });

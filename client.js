@@ -2,20 +2,26 @@
 window.__ModuleLoader__.load({id:'dsh-sidebar',factory(require){
 const OWN_ID = 'dsh-sidebar';
 const GROUPS = ['sidebar', 'settings'];
+
 const MORE_ID = 'dsh-sidebar:more';
-const PLUGINS_ALIAS = 'dsh-sidebar:panel:plugins';
-const FOOTER_PREFIX = 'dsh-sidebar:footer:';
-function footerViewId(id) { return FOOTER_PREFIX + id; }
-function footerEntryId(id) { return typeof id === 'string' && id.startsWith(FOOTER_PREFIX) ? id.slice(FOOTER_PREFIX.length) : null; }
-function isMenuEntry(options) {
-  const label = typeof options.label === 'function' ? options.label() : options.label;
-  return typeof options.id === 'string' && typeof label === 'string' && label.trim().length > 0;
+// Footer projections were removed; More is a persisted ordering boundary.
+function isPreferenceId(id) {
+  return typeof id === 'string' && !id.startsWith('dsh-sidebar:footer:');
+}
+function sidebarRows(rows, label = 'More') {
+  return [...rows.filter(row => row.id !== MORE_ID), {id: MORE_ID, label, order: Infinity}];
+}
+function splitSidebar(rows, preference) {
+  const ordered = arrange(sidebarRows(rows), preference);
+  const boundary = ordered.findIndex(row => row.id === MORE_ID);
+  return {visible: ordered.slice(0, boundary), folded: ordered.slice(boundary + 1)};
 }
 function menuLabel(row, preference) {
   return preference?.names && Object.hasOwn(preference.names, row.id) ? preference.names[row.id] : row.label;
 }
 function rename(preferences, group, id, label) {
   const next = normalize(preferences);
+  if (!isPreferenceId(id) || id === MORE_ID) return next;
   const name = typeof label === 'string' ? label.trim().slice(0, 80) : '';
   const names = {...next[group].names};
   if (name) Object.defineProperty(names, id, {value: name, enumerable: true, configurable: true, writable: true});
@@ -24,43 +30,7 @@ function rename(preferences, group, id, label) {
   else delete next[group].names;
   return next;
 }
-function mergeSidebarRows(panels, footer) {
-  return [...panels, ...footer.map(row => ({...row, id: footerViewId(row.id)}))];
-}
-// Only replace shell PanelRow elements, never invoke or re-create plugin actions.
-// Traversal stops at component boundaries; their hooks and slot injectors stay owned
-// by the original renderer. A footer action is a complete control, not an icon.
-function projectSidebarTree(React, tree, renderFooter) {
-  if (Array.isArray(tree)) return tree.map(node => projectSidebarTree(React, node, renderFooter));
-  if (!React.isValidElement(tree)) return tree;
-  const id = footerEntryId(tree.props.id);
-  if (id !== null && typeof tree.props.usePanelInfo === 'function' && typeof tree.props.selectPanel === 'function') {
-    return renderFooter(id, tree.props.wide, tree.key, tree.props.label);
-  }
-  return tree.props.children === undefined ? tree : React.cloneElement(tree, undefined,
-    projectSidebarTree(React, tree.props.children, renderFooter));
-}
-function isProtected(id) { return id === OWN_ID || id === MORE_ID; }
-// The rc.5 shell hard-codes literal 'plugins' as permanently pinned and omits
-// it from More. Use a presentation-only id; navigation and icons map back.
-function viewPanelId(id) { return id === 'plugins' ? PLUGINS_ALIAS : id; }
-function realPanelId(id) { return id === PLUGINS_ALIAS ? 'plugins' : id; }
-function withMore(rows, label = 'More') {
-  return [...rows.filter(row => row.id !== MORE_ID), {id: MORE_ID, label, order: Infinity}];
-}
-function sidebarView(rows, preference, label = 'More') {
-  const ordered = arrange(withMore(rows, label), preference);
-  const split = ordered.findIndex(row => row.id === MORE_ID);
-  const direct = ordered.slice(0, split), folded = ordered.slice(split + 1);
-  return {
-    direct, folded,
-    // The virtual More row remains unpinned: it keeps the shell's nav alive
-    // even when every real entry is hidden or folded. It is never a panel.
-    panels: ordered.map(row => ({...row, id: viewPanelId(row.id)})),
-    unpinned: [...folded.map(row => viewPanelId(row.id)), MORE_ID],
-  };
-}
-/** Narrow rc.5 compatibility adapter; never duplicate child declarations. */
+/** Reversible metadata adapter; never duplicate child declarations. */
 function replaceComponent(entry, replacement) {
   const original = entry.component;
   entry.component = replacement;
@@ -74,41 +44,62 @@ function normalize(value) {
   for (const group of GROUPS) {
     const raw = value?.[group];
     const names = Object.fromEntries(Object.entries(raw?.names && typeof raw.names === 'object' && !Array.isArray(raw.names) ? raw.names : {})
-      .filter(([, name]) => typeof name === 'string' && name.trim())
+      .filter(([id, name]) => isPreferenceId(id) && id !== MORE_ID && typeof name === 'string' && name.trim())
       .map(([id, name]) => [id, name.trim().slice(0, 80)]));
     out[group] = {
+      order: [...new Set((Array.isArray(raw?.order) ? raw.order : []).filter(id => isPreferenceId(id) && (group === 'sidebar' || id !== MORE_ID)))],
       ...(Object.keys(names).length ? {names} : {}),
-      order: [...new Set((Array.isArray(raw?.order) ? raw.order : []).filter(x => typeof x === 'string'))],
-      hidden: [...new Set((Array.isArray(raw?.hidden) ? raw.hidden : []).filter(x => typeof x === 'string' && !isProtected(x)))],
+    };
+  }
+  const workspace = value?.workspace;
+  if (workspace !== null && typeof workspace === 'object' &&
+      (Object.getPrototypeOf(workspace) === Object.prototype || Object.getPrototypeOf(workspace) === null)) {
+    out.workspace = {
+      dynamicSort: workspace.dynamicSort === true,
+      ...(Object.hasOwn(workspace, 'pinning') ? {pinning: workspace.pinning === true} : {}),
+      ...(Object.hasOwn(workspace, 'onlyPinned') ? {onlyPinned: workspace.onlyPinned === true} : {}),
+      ...(Object.hasOwn(workspace, 'activeIndicator') ? {activeIndicator: workspace.activeIndicator === true} : {}),
+      ...(Object.hasOwn(workspace, 'pinnedWorkspaceIds') ? {
+        pinnedWorkspaceIds: [...new Set((Array.isArray(workspace.pinnedWorkspaceIds) ? workspace.pinnedWorkspaceIds : [])
+          .filter(id => typeof id === 'string' && id.trim()))],
+      } : {}),
     };
   }
   return out;
 }
-function arrange(rows, preference, includeHidden = false) {
+function arrange(rows, preference) {
   const ranks = new Map(preference.order.map((id, i) => [id, i]));
   const ordered = rows.map((row, index) => ({row, index})).sort((a, b) => {
     const ar = ranks.get(a.row.id), br = ranks.get(b.row.id);
     if (ar !== undefined || br !== undefined) return (ar ?? Infinity) - (br ?? Infinity) || a.index - b.index;
     return (a.row.order ?? 0) - (b.row.order ?? 0) || a.index - b.index;
   }).map(x => x.row);
-  const visible = includeHidden ? ordered : ordered.filter(row => isProtected(row.id) || !preference.hidden.includes(row.id));
-  return visible.map(row => menuLabel(row, preference) === row.label ? row : {...row, label: menuLabel(row, preference)});
+  return ordered.map(row => menuLabel(row, preference) === row.label ? row : {...row, label: menuLabel(row, preference)});
+}
+/** Insert a live row before/after another row in this group's current order. */
+function reorder(preferences, group, rows, id, targetId, after = false) {
+  const next = normalize(preferences);
+  if (!GROUPS.includes(group) || id === targetId || !isPreferenceId(id) || !isPreferenceId(targetId)) return next;
+  const order = arrange(rows, next[group]).map(row => row.id);
+  const from = order.indexOf(id);
+  if (from < 0 || !order.includes(targetId)) return next;
+  const original = [...order];
+  order.splice(from, 1);
+  const to = order.indexOf(targetId) + (after ? 1 : 0);
+  order.splice(to, 0, id);
+  if (order.every((value, index) => value === original[index])) return next;
+  // Keep unloaded identities available without disturbing the live row order.
+  next[group].order = [...order.filter(isPreferenceId), ...next[group].order.filter(value => !order.includes(value))];
+  return next;
 }
 function move(preferences, group, rows, id, delta) {
   const next = normalize(preferences);
-  const order = arrange(rows, next[group], true).map(x => x.id);
+  const order = arrange(rows, next[group]).map(x => x.id);
   const from = order.indexOf(id), to = from + delta;
   if (from < 0 || to < 0 || to >= order.length) return next;
   [order[from], order[to]] = [order[to], order[from]];
   // Retain temporarily unloaded plugin identities without changing live order.
-  next[group].order = [...order, ...next[group].order.filter(x => !order.includes(x))];
-  return next;
-}
-function toggle(preferences, group, id) {
-  const next = normalize(preferences);
-  if (isProtected(id)) return next;
-  const hidden = next[group].hidden;
-  next[group].hidden = hidden.includes(id) ? hidden.filter(x => x !== id) : [...hidden, id];
+  next[group].order = [...order.filter(isPreferenceId), ...next[group].order.filter(x => !order.includes(x))];
   return next;
 }
 
@@ -183,64 +174,227 @@ function createPreferencesController(form, legacy = {}) {
   };
 }
 
+// Presentation-only ordering: never writes the native workspace registry order.
+function orderRecentWorkspaces(snapshot, sessions, view, enabled, pinOptions = {}) {
+  const dynamic = enabled && view?.groupBy === 'workspace' && view?.orderBy === 'updated';
+  const pinned = new Set(pinOptions.pinning && view?.groupBy !== 'flat' ? pinOptions.pinnedWorkspaceIds || [] : []);
+  const onlyPinned = pinOptions.onlyPinned === true && view?.groupBy === 'workspace';
+  const visiblePins = new Set(pinOptions.pinnedWorkspaceIds || []);
+  if ((!dynamic && pinned.size === 0 && !onlyPinned) || !Array.isArray(snapshot?.items)) return snapshot;
+  const archived = new Set(snapshot.archivedSessionIds || []);
+  const filter = view?.archivedFilter || 'default';
+  const items = onlyPinned ? snapshot.items.filter(workspace => visiblePins.has(workspace.workspaceId)) : snapshot.items;
+  const ranked = items.map((workspace, index) => {
+    let updatedAt = -Infinity;
+    for (const id of dynamic ? workspace.sessionIds || [] : []) {
+      const session = sessions?.byId?.[id];
+      if (!session || session.origin === 'subagent') continue;
+      if (session.blank && !(session.retainedBy?.mainView > 0)) continue;
+      if (filter === 'only' ? !archived.has(id) : filter !== 'show' && archived.has(id)) continue;
+      if (typeof session.updatedAt === 'number' && Number.isFinite(session.updatedAt)) updatedAt = Math.max(updatedAt, session.updatedAt);
+    }
+    return {workspace, index, updatedAt};
+  });
+  ranked.sort((a, b) => {
+    const ap = pinned.has(a.workspace.workspaceId), bp = pinned.has(b.workspace.workspaceId);
+    if (ap !== bp) return ap ? -1 : 1;
+    // Pinned workspaces keep their native relative order; recency applies only
+    // to the ordinary block. Native session pins never enter this comparison.
+    if (ap || !dynamic || a.updatedAt === b.updatedAt) return a.index - b.index;
+    return a.updatedAt > b.updatedAt ? -1 : 1;
+  });
+  if (ranked.length === snapshot.items.length && ranked.every((row, i) => row.workspace === snapshot.items[i])) return snapshot;
+  return {...snapshot, items: ranked.map(row => row.workspace)};
+}
+
+// Native grouping puts sessions absent from the workspace projection into
+// Ungrouped. Filter the matching session projection too, without touching the
+// actual session store, selection, retention or workspace membership.
+function filterWorkspaceSessions(sessions, workspaces, enabled) {
+  if (!enabled || !Array.isArray(workspaces?.items)) return sessions;
+  const members = new Set(workspaces.items.flatMap(workspace => workspace.sessionIds || []));
+  return {...sessions,
+    ids: (sessions.ids || Object.keys(sessions.byId || {})).filter(id => members.has(id)),
+    byId: Object.fromEntries(Object.entries(sessions.byId || {}).filter(([id]) => members.has(id))),
+  };
+}
+
+// Aggregate live activity only: an unread completion is not an active session.
+// Match native root-row visibility, including archived filtering and blank rows.
+function workspaceActivity(workspace, sessions, statuses, archivedIds = [], archivedFilter = 'default') {
+  const archived = new Set(archivedIds);
+  let state = null;
+  for (const id of workspace?.sessionIds || []) {
+    const session = sessions?.byId?.[id];
+    if (!session || session.origin === 'subagent' || session.blank) continue;
+    if (archivedFilter === 'only' ? !archived.has(id) : archivedFilter !== 'show' && archived.has(id)) continue;
+    const status = statuses?.get(id);
+    if (['approval', 'plan-review', 'question'].includes(status?.pendingInteraction?.kind)) return 'warning';
+    const running = status?.running ?? session.running;
+    const children = sessions?.projectionsBySession?.[id]?.values?.subagentCatalog || [];
+    if (running || children.some(child => (statuses?.get(child.id)?.running ?? sessions?.byId?.[child.id]?.running) === true)) state = 'ongoing';
+  }
+  return state;
+}
+
+function workspaceActivityCss(id, menuOpen = false) {
+  if (typeof id !== 'string' || !id) return '';
+  const value = Array.from('workspace:' + id, char => /[a-zA-Z0-9_-]/.test(char) ? char : '\\' + char.codePointAt(0).toString(16) + ' ').join('');
+  const row = `[data-row-key="${value}"][role="treeitem"]`;
+  const strip = `${row}>:has(>.dshsb-workspace-activity)`;
+  const marker = `${strip}>.dshsb-workspace-activity`;
+  const resting = selector => `${selector}>:has(>.dshsb-workspace-activity){display:inline-flex}
+${selector}>:has(>.dshsb-workspace-activity)>:not(.dshsb-workspace-activity){display:none}
+${selector} .dshsb-workspace-activity{display:inline-flex}`;
+  return `${marker}{display:none;flex:none;width:16px;height:20px;align-items:center;justify-content:center;pointer-events:none}
+${!menuOpen ? `@media(hover:hover){${resting(`${row}:not(:hover):not(:focus-within)`)}}
+@media(hover:none){${resting(`${row}:not([aria-expanded="true"]):not(:focus-within)`)}}` : ''}`;
+}
+
+// Exact installed IconPinFillRegular geometry (native session pin, 14px).
+const WORKSPACE_PIN_PATHS = Object.freeze([
+  'M9.96976 1.70572L13.1554 3.93629L10.9019 8.12317L11.5158 11.605L10.7192 12.7427L2.52767 7.00693L3.3243 5.86922L6.80612 5.25528L9.96976 1.70572Z',
+  'M6.05285 9.47511C6.27284 9.16094 6.70586 9.08458 7.02003 9.30457C7.3342 9.52455 7.41055 9.95757 7.19057 10.2717L3.98587 14.4708L3.21223 13.9291L6.05285 9.47511Z',
+]);
+const WORKSPACE_PIN_MASK = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke-width="1"><path d="M9.96976 1.70572L13.1554 3.93629L10.9019 8.12317L11.5158 11.605L10.7192 12.7427L2.52767 7.00693L3.3243 5.86922L6.80612 5.25528L9.96976 1.70572Z" fill="black" stroke="black" stroke-linejoin="round"/><path d="M6.05285 9.47511C6.27284 9.16094 6.70586 9.08458 7.02003 9.30457C7.3342 9.52455 7.41055 9.95757 7.19057 10.2717L3.98587 14.4708L3.21223 13.9291L6.05285 9.47511Z" fill="black"/></svg>');
+const WORKSPACE_PIN_OUTLINE_MASK = WORKSPACE_PIN_MASK.replace(encodeURIComponent('fill="black" stroke="black"'), encodeURIComponent('stroke="black"'));
+function workspacePinMarkerCss(id, menuOpen = false, pinned = true) {
+  if (typeof id !== 'string' || !id) return '';
+  // Escape the complete attribute value, including quotes and '<', so IDs can
+  // neither inject selectors nor terminate the style element.
+  const value = Array.from('workspace:' + id, char => /[a-zA-Z0-9_-]/.test(char) ? char : '\\' + char.codePointAt(0).toString(16) + ' ').join('');
+  const row = `[data-row-key="${value}"][role="treeitem"]`;
+  const action = `${row} .dshsb-workspace-pin-action`;
+  const strip = `${row}>:has(>.dshsb-workspace-pin-action)`;
+  return `${row}::after{content:"";display:${pinned && !menuOpen ? 'inline-flex' : 'none'};flex:none;width:16px;height:20px;margin-left:6px;pointer-events:none;background-color:var(--dsw-alias-label-caption);-webkit-mask:url("${WORKSPACE_PIN_MASK}") center/14px 14px no-repeat;mask:url("${WORKSPACE_PIN_MASK}") center/14px 14px no-repeat}
+${action}{order:2;flex:none;cursor:pointer}
+${action}:disabled{opacity:.4;cursor:not-allowed}
+${action}:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+${action} .dshsb-workspace-pin-glyph{display:inline-block;width:14px;height:14px;pointer-events:none;background-color:currentColor;-webkit-mask:url("${WORKSPACE_PIN_OUTLINE_MASK}") center/contain no-repeat;mask:url("${WORKSPACE_PIN_OUTLINE_MASK}") center/contain no-repeat}
+${action}[aria-pressed="true"] .dshsb-workspace-pin-glyph{-webkit-mask-image:url("${WORKSPACE_PIN_MASK}");mask-image:url("${WORKSPACE_PIN_MASK}")}
+${row}:focus-within::after{display:none}
+${row}:focus-within>:has(>.dshsb-workspace-pin-action){display:inline-flex}
+${menuOpen ? `${strip}{display:inline-flex}` : ''}
+@media(hover:hover){${row}:hover::after{display:none}}
+@media(hover:none){${row}[aria-expanded="true"]::after{display:none}}`;
+}
+
+
+/** Project only the native navigation's element props, preserving its Menu,
+ * icons, routes, authorization and child-slot ownership. No DOM mutations. */
+function projectSidebarTree(React, tree, panels, preference, activePanelId, onPinnedChange) {
+  const {visible, folded} = splitSidebar(panels, preference);
+  const visibleIds = new Set(visible.map(row => row.id));
+  let foundMore = false;
+  function hasMore(node) {
+    if (Array.isArray(node)) return node.some(hasMore);
+    if (!React.isValidElement(node)) return false;
+    if (Array.isArray(node.props.entries) && typeof node.props.onPinnedChange === 'function' &&
+        typeof node.props.onOpen === 'function') return true;
+    return hasMore(node.props.children);
+  }
+  foundMore = hasMore(tree);
+  // If a future DSH version removes the native More menu, fail open.
+  if (!foundMore) return tree;
+  function adapt(node) {
+    if (Array.isArray(node)) return node.map(adapt);
+    if (!React.isValidElement(node)) return node;
+    if (Array.isArray(node.props.entries) && typeof node.props.onPinnedChange === 'function' &&
+        typeof node.props.onOpen === 'function') {
+      return React.cloneElement(node, {
+        entries: [...visible.map(row => ({id: row.id, label: row.label, pinned: true, active: row.id === activePanelId})),
+          ...folded.map(row => ({id: row.id, label: row.label, pinned: false, active: row.id === activePanelId}))],
+        onPinnedChange,
+      });
+    }
+    if (typeof node.props.id === 'string' && typeof node.props.canUnpin === 'boolean' &&
+        typeof node.props.selectPanel === 'function') {
+      return visibleIds.has(node.props.id) ? React.cloneElement(node, {canUnpin: false}) : null;
+    }
+    return node.props.children === undefined ? node : React.cloneElement(node, {}, adapt(node.props.children));
+  }
+  return adapt(tree);
+}
+
 const React = require('react');
 const h = React.createElement;
+const {StateDot} = require('@deepseek-ai/dsh-client-ui-primitives');
 const NS = 'dsh-sidebar';
 const STORAGE_KEY = 'dsh-sidebar.preferences.v1';
+const PANELS_KEY = 'dsh-sidebar.panels.v1';
+const EMPTY_WORKSPACE_PINS = Object.freeze([]);
+function readPanelState() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(PANELS_KEY) || 'null'); } catch { /* Storage may be unavailable. */ }
+  return Object.fromEntries([...GROUPS, 'workspace'].map((group, index) => [group,
+    typeof saved?.[group] === 'boolean' ? saved[group] : index === 0]));
+}
 const dicts = {
   zh: {
-    title: '侧边栏管理', description: '调整导航项目的顺序和显示状态，立即生效并自动保存。',
-    sidebar: '主侧边栏', settings: '设置侧边栏', up: '上移', down: '下移', show: '显示', hide: '隐藏',
-    protected: '始终显示', reset: '恢复默认', resetGroup: '重置此列表',
+    title: '侧边栏管理',
+    sidebar: '主侧边栏', settings: '设置侧边栏', drag: '拖拽排序', dragHint: '拖动调整顺序，也可使用上下方向键',
     error: '保存到插件配置失败，已重新读取服务器配置，请重试。',
     offline: '保存失败，无法确认服务器最新配置；当前显示最后已确认的配置。请恢复连接后刷新。',
-    loading: '正在读取插件配置…', saving: '正在保存到插件配置…', saved: '已保存到插件配置',
+    loading: '正在读取插件配置…', saving: '正在保存到插件配置…',
     unavailable: '插件配置尚不可用，请重启应用以加载新版服务端插件。', readonly: '当前连接无配置写入权限。',
-    rename: '菜单名称', defaultName: '恢复原名', nameHint: '修改名称后按 Enter 或离开输入框保存；清空可恢复原名。',
-    hint: '使用 ↑ ↓ 调整顺序；开关控制显示或隐藏。新安装的导航项目会自动追加。',
-    more: '更多', moreHint: '排在此项下面的菜单会收入「更多」', inMore: '位于「更多」菜单内',
-    moreLockedHint: '「更多」不可隐藏；可上下移动，调整收纳范围。',
-    fixed: '底部插件入口也纳入主侧边栏管理；新会话及头像设置入口保持原位。隐藏项目不会停用插件，也不会出现在「更多」内。',
-    lockHint: '本插件的设置入口和「更多」不可隐藏；将菜单移到「更多」上方可重新显示在侧边栏。',
-    empty: '当前没有可调整的导航项目。', compatibility: '当前应用的导航接口不兼容，未修改原有导航。',
+    rename: '菜单名称', defaultName: '恢复原名', more: '更多',
+    moreHint: '「更多」是收纳分界线：上方直接显示，下方收入更多。拖动分界线或菜单调整，重启后保留。',
+    folded: '已收入更多', moreBoundary: '收纳分界线',
+    workspace: '工作区设置', pinWorkspace: '置顶工作区',
+    activeIndicator: '活跃工作区标识', activeIndicatorHint: '工作区有运行中或等待交互的会话时，在右侧显示会话同款圆圈；悬停时隐藏，固定图标位于其右侧。',
+    activityOngoing: '工作区有运行中的会话', activityWarning: '工作区有等待交互的会话',
+    pinHint: '悬停工作区后，点击右侧图钉切换置顶，优先于动态排序。',
+    pinAction: '置顶工作区', unpinAction: '取消置顶工作区', pinFailed: '工作区置顶设置保存失败，请重试。',
+    filterWorkspaces: '筛选工作区', onlyPinned: '仅显示固定工作区', filterFailed: '工作区筛选设置保存失败，请重试。',
+    dynamicSort: '动态调整工作区排序', dynamicSortHint: '仅在「按工作区」和「最近更新」时生效，最近有会话更新的工作区排在最前。',
+    empty: '当前没有可调整的导航项目。', compatibility: '部分导航接口不兼容，相关导航已保留原样。',
   },
   en: {
-    title: 'Sidebar Manager', description: 'Reorder navigation entries and control their visibility. Changes apply immediately and are saved automatically.',
-    sidebar: 'Main sidebar', settings: 'Settings sidebar', up: 'Move up', down: 'Move down', show: 'Show', hide: 'Hide',
-    protected: 'Always visible', reset: 'Restore defaults', resetGroup: 'Reset this list',
+    title: 'Sidebar Manager',
+    sidebar: 'Main sidebar', settings: 'Settings sidebar', drag: 'Drag to reorder', dragHint: 'Drag to reorder, or use the up and down arrow keys',
     error: 'Could not save plugin configuration. Server preferences were reloaded; please retry.',
     offline: 'Save failed and the latest server state could not be confirmed. Showing the last confirmed configuration; reconnect and refresh.',
-    loading: 'Loading plugin configuration…', saving: 'Saving plugin configuration…', saved: 'Saved to plugin configuration',
+    loading: 'Loading plugin configuration…', saving: 'Saving plugin configuration…',
     unavailable: 'Plugin configuration is unavailable. Restart the app to load the updated server plugin.', readonly: 'This connection cannot write configuration.',
-    rename: 'Menu name', defaultName: 'Restore name', nameHint: 'Press Enter or leave the field to save a name. Clear it to restore the original.',
-    hint: 'Use ↑ ↓ to reorder and the switches to show or hide. Newly installed entries are appended automatically.',
-    more: 'More', moreHint: 'Entries below this row go into More', inMore: 'Inside the More menu',
-    moreLockedHint: 'More cannot be hidden. Move it to change which entries are folded.',
-    fixed: 'Plugin footer actions are managed in the main sidebar too. New Session and the profile/settings launcher keep their positions. Hidden entries do not disable plugins and are excluded from More.',
-    lockHint: 'This settings entry and More cannot be hidden. Move entries above More to put them back in the sidebar.',
-    empty: 'No navigation entries are available.', compatibility: 'The application navigation API is incompatible. Original navigation was left unchanged.',
+    rename: 'Menu name', defaultName: 'Restore name', more: 'More',
+    moreHint: 'More is the boundary: entries above stay visible; entries below go into More. Drag the boundary or entries to adjust. Saved across restarts.',
+    folded: 'Inside More', moreBoundary: 'Folding boundary',
+    workspace: 'Workspace settings', pinWorkspace: 'Pin workspaces',
+    activeIndicator: 'Active workspace indicator', activeIndicatorHint: 'Show the session status circle on the right when sessions are running or awaiting interaction. Hidden on hover, before the pin marker.',
+    activityOngoing: 'Workspace has running sessions', activityWarning: 'Workspace has sessions awaiting interaction',
+    pinHint: 'Hover a workspace and click its rightmost pin to toggle pinning, ahead of dynamic sorting.',
+    pinAction: 'Pin workspace', unpinAction: 'Unpin workspace', pinFailed: 'Could not save workspace pinning. Please retry.',
+    filterWorkspaces: 'Filter workspaces', onlyPinned: 'Only show pinned workspaces', filterFailed: 'Could not save workspace filtering. Please retry.',
+    dynamicSort: 'Dynamically reorder workspaces', dynamicSortHint: 'Only with By workspace and Recently updated: workspaces with the most recently updated sessions come first.',
+    empty: 'No navigation entries are available.', compatibility: 'Some navigation APIs are incompatible. Affected navigation was left unchanged.',
   },
 };
 const css = `
 .dshsb-page{color:var(--dsw-alias-label-primary);font-size:14px;line-height:1.6;max-width:920px;margin:0 auto;padding:4px 0 24px}
-.dshsb-page *{box-sizing:border-box}.dshsb-page h2{font-size:20px;margin:0 0 6px;font-weight:600}.dshsb-page p{margin:4px 0 12px;color:var(--dsw-alias-label-secondary)}
-.dshsb-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:18px 0}.dshsb-status{font-size:12px;color:var(--dsw-alias-label-secondary)}.dshsb-error{color:var(--dsw-alias-state-error-primary)}
+.dshsb-page *{box-sizing:border-box}.dshsb-page p{margin:4px 0 12px;color:var(--dsw-alias-label-secondary)}
+.dshsb-status{font-size:12px;color:var(--dsw-alias-label-secondary)}.dshsb-error{color:var(--dsw-alias-state-error-primary)}
 .dshsb-card{border:1px solid var(--dsw-alias-border-l1);border-radius:16px;overflow:hidden;margin:16px 0;background:var(--dsw-alias-bg-layer-1)}
 .dshsb-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;gap:12px;background:var(--dsw-alias-bg-layer-2)}.dshsb-head h3{font-size:15px;margin:0;font-weight:600}
-.dshsb-row{display:flex;gap:12px;align-items:center;padding:12px 18px;min-height:62px;border-top:1px solid var(--dsw-alias-border-l1)}.dshsb-muted .dshsb-label{color:var(--dsw-alias-label-secondary)}
-.dshsb-number{width:22px;flex-shrink:0;font-size:12px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary)}.dshsb-label{flex:1;min-width:0;overflow-wrap:anywhere}.dshsb-id{display:block;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dshsb-head h3{flex:1;min-width:0}.dshsb-disclosure{display:flex;align-items:center;gap:8px;width:100%;border:0;padding:0;background:transparent;text-align:start;font-weight:600!important;min-height:32px}.dshsb-disclosure:focus-visible{outline-offset:4px!important}.dshsb-chevron{display:inline-block;flex:none;font-size:12px;transform:rotate(0deg)}.dshsb-disclosure[aria-expanded=true] .dshsb-chevron{transform:rotate(90deg)}.dshsb-panel[hidden]{display:none}
+.dshsb-row{position:relative;display:flex;gap:12px;align-items:center;padding:12px 18px;min-height:62px;border-top:1px solid var(--dsw-alias-border-l1)}
+.dshsb-page .dshsb-grip{display:flex;align-items:center;justify-content:center;align-self:stretch;flex:none;width:32px;min-height:36px;border:0;border-radius:6px;padding:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:grab;touch-action:none;user-select:none}.dshsb-grip:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}.dshsb-page .dshsb-grip:active:not(:disabled){cursor:grabbing}.dshsb-grip svg{pointer-events:none}.dshsb-row[data-dragging=true]{opacity:.5}.dshsb-row[data-drop=before]::before,.dshsb-row[data-drop=after]::after{content:'';position:absolute;left:12px;right:12px;height:2px;z-index:1;background:var(--dsw-alias-brand-primary);pointer-events:none}.dshsb-row[data-drop=before]::before{top:0}.dshsb-row[data-drop=after]::after{bottom:0}
+.dshsb-label{flex:1;min-width:0;overflow-wrap:anywhere}.dshsb-id,.dshsb-fold-state{display:block;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dshsb-icon{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex:none;color:var(--dsw-alias-label-secondary)}
 .dshsb-name{display:flex;align-items:center;gap:6px}.dshsb-name-input{min-width:0;width:100%;font:inherit;color:inherit;line-height:inherit;background:transparent;border:1px solid transparent;border-radius:6px;padding:2px 4px;margin-left:-5px}.dshsb-name-input:hover:not(:disabled){border-color:var(--dsw-alias-border-l1)}.dshsb-name-input:focus{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}.dshsb-name-reset{font-size:11px!important;flex:none;padding:3px 6px!important}
-.dshsb-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}.dshsb-page button{font:inherit;color:inherit;cursor:pointer}.dshsb-button{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:9px;padding:6px 12px;min-height:32px}.dshsb-button:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2)}.dshsb-page button:disabled{opacity:.4;cursor:not-allowed}.dshsb-page button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:3px}.dshsb-arrow{padding:3px 9px}
-.dshsb-switch{position:relative;width:36px;height:22px;border:0;border-radius:99px;padding:0;background:var(--dsw-alias-state-idle-primary);margin-left:10px;flex-shrink:0}.dshsb-switch[aria-checked=true]{background:var(--dsw-alias-brand-primary)}.dshsb-switch span{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-bg-base);transition:transform .12s}.dshsb-switch[aria-checked=true] span{transform:translateX(14px)}
-.dshsb-lock{font-size:11px;color:var(--dsw-alias-label-secondary);margin-left:6px}.dshsb-note{font-size:12px}.dshsb-empty{padding:18px}
-@media(max-width:600px){.dshsb-row{padding:10px;gap:6px}.dshsb-id{display:none}.dshsb-lock{max-width:45px;line-height:1.3}.dshsb-number{width:14px}.dshsb-head{padding:12px}.dshsb-page{padding:0}}
-@media(prefers-reduced-motion:reduce){.dshsb-switch span{transition:none}}
+.dshsb-page button{font:inherit;color:inherit;cursor:pointer}.dshsb-button{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:9px;padding:6px 12px;min-height:32px}.dshsb-button:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2)}.dshsb-page button:disabled{opacity:.4;cursor:not-allowed}.dshsb-page button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:3px}
+.dshsb-setting-copy{flex:1;min-width:0}.dshsb-setting-hint{display:block;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary);margin-top:4px}.dshsb-page .dshsb-switch{position:relative;flex:none;width:36px;height:22px;border:0;border-radius:99px;padding:0;background:var(--dsw-alias-state-idle-primary)}.dshsb-switch[aria-checked=true]{background:var(--dsw-alias-brand-primary)}.dshsb-switch span{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-bg-base)}.dshsb-switch[aria-checked=true] span{transform:translateX(14px)}
+.dshsb-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}.dshsb-empty{padding:18px}
+@media(max-width:600px){.dshsb-row{padding:10px;gap:6px}.dshsb-id{display:none}.dshsb-head{padding:12px}.dshsb-page{padding:0}}
 `;
 return {
-  inject: ['slots', 'locale', 'configForms'],
+  inject: ['slots', 'locale', 'configForms', 'contextMenus'],
   apply(ctx) {
     ctx.effect(() => ctx.locale.register(NS, dicts));
     const t = ctx.locale.bind(NS);
+    // LocaleRuntime methods read instance fields (`this.snapshot/listeners`).
+    // React invokes external-store callbacks unbound; preserve their receiver.
+    const subscribeLocale = listener => ctx.locale.subscribe(listener);
+    const getLocaleSnapshot = () => ctx.locale.getSnapshot();
     const source = createPreferencesController(ctx.configForms.get(OWN_ID), {
       read: () => JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'),
       clear: () => localStorage.removeItem(STORAGE_KEY),
@@ -252,52 +406,37 @@ return {
       },
     });
     const save = next => source.save(next);
-    ctx.effect(() => () => source.dispose());
-    // rc.5 does not provide a navigation projection/filter API. Registering
-    // another parent with the same children is INVALID: declarations have one
-    // owner, even when the parent registration shadows the original.
-    // Use a narrow, reversible component adapter on the existing entry instead.
-    // Its renderer retains the original child authorization, inject cache and
-    // exact store. No second shell or child declarations are registered.
+    let live = true;
+    ctx.effect(() => () => { live = false; source.dispose(); });
+    async function toggleWorkspacePin(workspaceId) {
+      const current = source.getSnapshot();
+      if (!live || !current.writable || !current.preferences.workspace?.pinning) return;
+      const workspace = current.preferences.workspace;
+      const ids = workspace.pinnedWorkspaceIds || [];
+      const pinnedWorkspaceIds = ids.includes(workspaceId) ? ids.filter(id => id !== workspaceId) : [...ids, workspaceId];
+      const accepted = await save({...current.preferences, workspace: {...workspace, pinnedWorkspaceIds}});
+      if (!accepted && live) ctx.contextMenus.notify(t('pinFailed'), false);
+    }
+    // Native IDs, icon factories, navigation and child declarations stay owned
+    // by DSH. Only the navigation's display grouping uses persisted preferences.
+    function SidebarWithMore({component: Component, preference, ...props}) {
+      let panels = [];
+      const usePanels = selector => props.usePanels(rows => { panels = rows; return selector(rows); });
+      const activePanelId = props.usePanelInfo(info => info.activePanelId);
+      // Still invoke the native hook at each call site, but do not let its
+      // volatile pin store disagree with the persistent ordering boundary.
+      const useEntryPins = selector => { props.useEntryPins(identity); return selector([]); };
+      const tree = Component({...props, usePanels, useEntryPins});
+      return projectSidebarTree(React, tree, panels, preference, activePanelId, (id, pinned) => {
+        const current = source.getSnapshot();
+        if (!current.writable) { ctx.contextMenus.notify(t('readonly'), false); return; }
+        return save(reorder(current.preferences, 'sidebar', catalogs.sidebar.getSnapshot(), id, MORE_ID, !pinned))
+          .then(accepted => { if (!accepted && live) ctx.contextMenus.notify(t('error'), false); });
+      });
+    }
     const compatibility = [];
     const identity = value => value;
-    const footerCatalog = catalog('sidebar.footer.action');
-    // SlotOutlet adds a display:contents data-slot anchor. It remains a DOM
-    // parent, so a direct-child-only selector misses the native button/icon.
-    // Match only root controls, not arbitrary buttons in plugin subpanels.
-    const footerButton = ':is(.dshsb-footer-control,.dshsb-footer-control>[data-slot="sidebar.footer.action"])>button';
-    const footerCss = `
-.dshsb-footer-entry{position:relative;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:14px;font-weight:400;line-height:20px;border-radius:8px;min-width:0}
-.dshsb-footer-entry:hover{background:var(--dsw-alias-bg-layer-2)}
-${footerButton}{box-sizing:border-box!important;display:flex!important;align-items:center!important;justify-content:flex-start!important;width:100%!important;min-height:36px!important;height:36px!important;margin:0!important;padding:8px 12px!important;border-radius:8px!important;font:inherit!important;line-height:20px!important}
-${footerButton} svg{width:16px!important;height:16px!important;flex:none}
-.dshsb-footer-entry[data-wide=false] ${footerButton}{justify-content:center!important;padding:8px!important}
-.dshsb-footer-title{position:absolute;inset:0 12px 0 36px;display:flex;align-items:center;pointer-events:none;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:inherit;font:inherit;line-height:20px}
-.dshsb-footer-entry[data-menu=true]{font-size:13px;border-radius:var(--dsw-radius-md)}
-.dshsb-footer-entry[data-menu=true]:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dshsb-footer-entry[data-menu=true] ${footerButton}{min-height:34px!important;height:34px!important;padding:6px 8px!important;border-radius:var(--dsw-radius-md)!important}
-.dshsb-footer-entry[data-menu=true] ${footerButton} svg{width:14px!important;height:14px!important;color:var(--dsw-alias-menu-icon)}
-.dshsb-footer-entry[data-menu=true] .dshsb-footer-title{inset:0 8px 0 28px}
-`;
-    function FooterAction({id, label, wide, inMore = false, renderSlot, onDismiss}) {
-      return h('div', {className: 'dshsb-footer-entry', 'data-wide': wide, 'data-menu': inMore,
-        role: 'group', 'aria-label': label, title: !wide ? label : undefined,
-        onClick: event => {
-          // The icon-only original button fills the row; the presentation label
-          // never intercepts pointer events. Native actions still own the click.
-          if (!event.defaultPrevented) onDismiss?.();
-        }}, h('style', null, footerCss),
-        h('div', {className: 'dshsb-footer-control'}, renderSlot('sidebar.footer.action', {wide: false}, {only: id})),
-        wide ? h('span', {className: 'dshsb-footer-title', 'aria-hidden': true}, label) : null);
-    }
-    function ProjectedSidebar({component: Component, originalRenderSlot, ...props}) {
-      // This bridge is always mounted with the same original shell component.
-      // Calling it here keeps its hooks in a stable, separate React boundary.
-      const tree = Component(props);
-      return projectSidebarTree(React, tree, (id, wide, key, label) =>
-        h(FooterAction, {key, id, label, wide, renderSlot: originalRenderSlot}));
-    }
-    function wrap(name, hook, group) {
+    function wrap(name, hookName, group) {
       ctx.effect(() => {
         const patches = new Map();
         let enabled = true;
@@ -309,57 +448,35 @@ ${footerButton} svg{width:16px!important;height:16px!important;flex:none}
               if (!compatibility.includes(name)) compatibility.push(name);
               continue;
             }
-            const hookName = 'use' + hook[0].toUpperCase() + hook.slice(1);
             function NavigationAdapter(props) {
               const {preferences: state} = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
-              // The wrapper's group is fixed. Keep its hook list stable even
-              // when disposal switches it back to the original component.
-              const footer = group === 'sidebar'
-                ? React.useSyncExternalStore(footerCatalog.subscribe, footerCatalog.getSnapshot) : null;
               const originalHook = props[hookName];
-              if (!enabled || typeof originalHook !== 'function') return h(Component, {...props, key: 'dshsb-original'});
-              // Consume the original hooks normally, preserving subscriptions.
-              if (group === 'sidebar') {
-                const usePanels = selector => {
-                  const rows = mergeSidebarRows(originalHook(identity), footer);
-                  return selector(sidebarView(rows, state.sidebar, t('more')).panels);
-                };
-                const useEntryPins = selector => {
-                  props.useEntryPins(identity);
-                  const rows = mergeSidebarRows(originalHook(identity), footer);
-                  return selector(sidebarView(rows, state.sidebar, t('more')).unpinned);
-                };
-                const usePanelInfo = selector => props.usePanelInfo(info => selector({
-                  ...info, activePanelId: viewPanelId(info.activePanelId),
-                }));
-                const renderSlot = (name, owner, options) => {
-                  if (name === 'sidebar.footer.action') return h(React.Fragment, null,
-                    ...ctx.slots.entriesOfSlot(name).filter(entry => !isMenuEntry(entry.options))
-                      .map(entry => h(React.Fragment, {key: entry.options.id},
-                        props.renderSlot(name, owner, {...options, only: entry.options.id}))));
-                  const shared = name === 'sidebar.panellist.actions'
-                    ? {...owner, entries: owner.entries.filter(entry => entry.id !== MORE_ID),
-                        renderFooterAction: (id, onDismiss, label) => h(FooterAction, {
-                          id: footerEntryId(id), label, wide: true, inMore: true, renderSlot: props.renderSlot, onDismiss,
-                        }),
-                        renderPanelIcon: (id, active) => props.renderSlot('sidebar.panellist',
-                          {size: 14, active: Boolean(active)}, {only: realPanelId(id)}),
-                      } : owner;
-                  return props.renderSlot(name, shared,
-                    name === 'sidebar.panellist' && typeof options?.only === 'string'
-                      ? {...options, only: realPanelId(options.only)} : options);
-                };
-                return h(ProjectedSidebar, {...props, key: 'dshsb-managed', component: Component,
-                  originalRenderSlot: props.renderSlot, usePanels, useEntryPins, usePanelInfo, renderSlot,
-                  t: (key, ...args) => key === 'panels.more'
-                    ? menuLabel({id: MORE_ID, label: t('more')}, state.sidebar) : props.t(key, ...args),
-                  selectPanel: id => { if (footerEntryId(id) === null) props.selectPanel(realPanelId(id)); },
-                });
+              if (!enabled) return h(Component, {...props, key: 'dshsb-original'});
+              if (typeof originalHook !== 'function') {
+                if (!compatibility.includes(name)) compatibility.push(name);
+                return h(Component, {...props, key: 'dshsb-original'});
               }
-              const useNavigation = selector => {
-                const rows = originalHook(identity);
-                return selector(arrange(rows, state[group]));
-              };
+              const useNavigation = selector => selector(arrange(originalHook(identity), state[group]));
+              if (group === 'sidebar' && [props.useEntryPins, props.usePanelInfo].every(fn => typeof fn === 'function')) {
+                return h(SidebarWithMore, {...props, key: 'dshsb-managed', component: Component,
+                  preference: state.sidebar, [hookName]: useNavigation});
+              }
+              if (group === 'settings' && typeof props.renderSlot === 'function') {
+                // Only the settings shell owns settings.section.icon. Borrow its
+                // authorized renderer instead of redeclaring or invoking icons.
+                // The shell builds its nav before the active page, supplying the
+                // native fallback for every section (including built-in icons).
+                const fallbacks = new Map();
+                const renderSettingsIcon = (id, size) => props.renderSlot('settings.section.icon',
+                  {size, active: false}, {only: id, fallback: fallbacks.get(id)});
+                const renderSlot = (name, owner, options) => {
+                  if (name === 'settings.section.icon') fallbacks.set(options?.only, options?.fallback);
+                  return props.renderSlot(name,
+                    name === 'settings.section' && options?.only === OWN_ID
+                      ? {...owner, renderSettingsIcon} : owner, options);
+                };
+                return h(Component, {...props, key: 'dshsb-managed', [hookName]: useNavigation, renderSlot});
+              }
               return h(Component, {...props, key: 'dshsb-managed', [hookName]: useNavigation});
             }
             patches.set(entry, replaceComponent(entry, NavigationAdapter));
@@ -371,38 +488,181 @@ ${footerButton} svg{width:16px!important;height:16px!important;flex:none}
           off();
           enabled = false;
           for (const restore of patches.values()) restore();
-          // An already mounted adapter may survive until its parent rerenders.
-          // Make it immediately render the unmodified view on plugin disposal.
           source.refresh();
           patches.clear();
         };
       });
     }
-    wrap('sidebar', 'panels', 'sidebar');
-    wrap('sidebar.settings', 'sections', 'settings');
+    wrap('sidebar', 'usePanels', 'sidebar');
+    wrap('sidebar.settings', 'useSections', 'settings');
+
+    ctx.effect(() => {
+      const patches = new Map();
+      let enabled = true;
+      const sync = () => {
+        for (const entry of ctx.slots.entriesOfSlot('sidebar.workspaces')) {
+          if (patches.has(entry)) continue;
+          const Component = entry.component;
+          if (typeof Component !== 'function') { compatibility.push('sidebar.workspaces'); continue; }
+          function WorkspaceAdapter(props) {
+            const {preferences} = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
+            // The original Browser owns these same hooks, store, actions and child
+            // declarations. Subscribe normally; change only the rendered items order.
+            if (![props.useWorkspaces, props.useSessions, props.useStore].every(fn => typeof fn === 'function')) {
+              if (!compatibility.includes('sidebar.workspaces')) compatibility.push('sidebar.workspaces');
+              return h(Component, props);
+            }
+            return h(WorkspaceProjection, {...props, component: Component,
+              active: enabled && preferences.workspace?.dynamicSort === true,
+              onlyPinned: enabled && preferences.workspace?.onlyPinned === true,
+              pinning: enabled && preferences.workspace?.pinning === true,
+              activeIndicator: enabled && preferences.workspace?.activeIndicator === true,
+              pinnedWorkspaceIds: preferences.workspace?.pinnedWorkspaceIds || EMPTY_WORKSPACE_PINS});
+          }
+          patches.set(entry, replaceComponent(entry, WorkspaceAdapter));
+        }
+      };
+      const off = ctx.slots.subscribe('sidebar.workspaces', sync);
+      sync();
+      return () => { off(); enabled = false; for (const restore of patches.values()) restore(); source.refresh(); };
+    });
+    // The installed Browser has no view-menu contribution slot. Adapt only its
+    // identifiable ViewOptionsMenu element, retaining the native Menu and actions.
+    function FilterMenu({component: Component, ...props}) {
+      const {preferences, writable} = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
+      React.useSyncExternalStore(subscribeLocale, getLocaleSnapshot);
+      const menu = Component(props);
+      if (!Array.isArray(menu?.props?.items) || !menu.props.items.some(item => item.id === 'only-archived')) return menu;
+      const id = 'dshsb-only-pinned';
+      return React.cloneElement(menu, {
+        items: [...menu.props.items,
+          {type: 'separator', id: 'dshsb-workspace-filter-separator'},
+          {type: 'label', id: 'dshsb-workspace-filter', text: t('filterWorkspaces')},
+          {id, label: t('onlyPinned'), icon: h('svg', {width: 16, height: 16, viewBox: '0 0 16 16',
+            fill: 'none', stroke: 'currentColor', 'stroke-width': 1, 'aria-hidden': true, focusable: false},
+            h('path', {d: WORKSPACE_PIN_PATHS[0], 'stroke-linejoin': 'round'}),
+            h('path', {d: WORKSPACE_PIN_PATHS[1], fill: 'currentColor'})),
+            disabled: !writable || props.groupBy !== 'workspace'}],
+        selectedIds: [...(menu.props.selectedIds || []), ...(preferences.workspace?.onlyPinned ? [id] : [])],
+        onSelect: selected => {
+          if (selected !== id) return menu.props.onSelect(selected);
+          // Close like the native items; the preferences controller applies the
+          // optimistic value immediately, so the list updates without waiting.
+          menu.props.onClose?.();
+          if (!writable || props.groupBy !== 'workspace') return;
+          const current = source.getSnapshot().preferences;
+          void save({...current, workspace: {...current.workspace, onlyPinned: current.workspace?.onlyPinned !== true}})
+            .then(accepted => { if (!accepted && live) ctx.contextMenus.notify(t('filterFailed'), false); });
+        },
+      });
+    }
+    function BrowserWithFilter({component: Component, fullWorkspaces, ...props}) {
+      function adapt(node) {
+        if (Array.isArray(node)) return node.map(adapt);
+        if (!React.isValidElement(node)) return node;
+        if (typeof node.type === 'function' && typeof node.props.onArchivedFilterPick === 'function' &&
+            typeof node.props.onGroupPick === 'function') {
+          return h(FilterMenu, {...node.props, component: node.type, key: node.key});
+        }
+        // Rename validates duplicates against the full registry, so the dialog
+        // must keep every Workspace even while the sidebar hides some.
+        if (Array.isArray(fullWorkspaces) && Array.isArray(node.props.workspaces) &&
+            typeof node.props.renameWorkspace === 'function' &&
+            typeof node.props.settleWorkspaceAction === 'function') {
+          return React.cloneElement(node, {workspaces: fullWorkspaces});
+        }
+        return node.props.children === undefined ? node : React.cloneElement(node, {}, adapt(node.props.children));
+      }
+      return adapt(Component(props));
+    }
+    function WorkspaceProjection({component: Component, active, pinning, onlyPinned, activeIndicator, pinnedWorkspaceIds, ...props}) {
+      const snapshot = props.useWorkspaces(identity);
+      const byId = props.useSessions(state => state.byId);
+      // Never subscribe the ordering projection to the whole viewing store:
+      // the native Browser reconciles account/expansion state in an effect
+      // whenever items change. Including that store snapshot here creates
+      // items -> reconciliation -> view -> new items -> reconciliation forever.
+      const groupBy = props.useStore(state => state.groupBy);
+      const orderBy = props.useStore(state => state.orderBy);
+      const archivedFilter = props.useStore(state => state.archivedFilter ?? 'default');
+      const projected = React.useMemo(() => orderRecentWorkspaces(snapshot, {byId},
+        {groupBy, orderBy, archivedFilter}, active, {pinning, pinnedWorkspaceIds, onlyPinned}),
+        [snapshot, byId, groupBy, orderBy, archivedFilter, active, pinning, pinnedWorkspaceIds, onlyPinned]);
+      const filtering = onlyPinned && groupBy === 'workspace';
+      const sessionSnapshot = props.useSessions(identity);
+      const statuses = typeof props.useSessionStatus === 'function' ? props.useSessionStatus(identity) : null;
+      const activityByWorkspace = React.useMemo(() => new Map(activeIndicator ? snapshot.items.map(workspace =>
+        [workspace.workspaceId, workspaceActivity(workspace, sessionSnapshot, statuses, snapshot.archivedSessionIds, archivedFilter)]) : []),
+        [activeIndicator, snapshot, sessionSnapshot, statuses, archivedFilter]);
+      const visibleSessions = React.useMemo(() => filterWorkspaceSessions(sessionSnapshot, projected, filtering),
+        [sessionSnapshot, projected, filtering]);
+      // Keep the native hook invocation at every Browser call site even while
+      // filtering, so toggling the filter never changes its React hook count.
+      const useSessions = filtering ? selector => {
+        props.useSessions(identity);
+        return selector(visibleSessions);
+      } : props.useSessions;
+      const menuTarget = React.useSyncExternalStore(ctx.contextMenus.active.subscribe, ctx.contextMenus.active.getSnapshot);
+      const {writable} = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
+      React.useSyncExternalStore(subscribeLocale, getLocaleSnapshot);
+      const openWorkspaceId = menuTarget?.kind === 'workspace' ? menuTarget.value.workspaceId : null;
+      const useWorkspaces = selector => selector(projected);
+      // The native Browser prunes expansion and manual Session orders for every
+      // Workspace absent from its list. A display filter must not discard those,
+      // so the retention call keeps every Workspace, including hidden ones.
+      const retainedWorkspaceIds = React.useRef(EMPTY_WORKSPACE_PINS);
+      retainedWorkspaceIds.current = snapshot.items.map(workspace => workspace.workspaceId);
+      const actionSource = props.actions;
+      const actions = React.useMemo(() => typeof actionSource?.retainAccountKeys === 'function'
+        ? {...actionSource, retainAccountKeys: keys => actionSource.retainAccountKeys(
+          [...new Set([...keys, ...retainedWorkspaceIds.current])])}
+        : actionSource, [actionSource]);
+      const renderFactorySlot = (name, owner, ...args) => {
+        const original = props.renderFactorySlot(name, owner, ...args);
+        const id = owner?.target?.kind === 'workspace' ? owner.target.value.workspaceId : null;
+        if (name !== 'contextMenu.button' || typeof id !== 'string') return original;
+        const activity = activityByWorkspace.get(id);
+        const marker = activity ? h(React.Fragment, null,
+          h('style', null, workspaceActivityCss(id, openWorkspaceId === id)),
+          h('span', {className: 'dshsb-workspace-activity', role: 'img',
+            'aria-label': t(activity === 'warning' ? 'activityWarning' : 'activityOngoing')}, h(StateDot, {state: activity}))) : null;
+        if (!pinning) return marker ? h(React.Fragment, null, marker, original) : original;
+        const pinned = pinnedWorkspaceIds.includes(id);
+        const label = t(pinned ? 'unpinAction' : 'pinAction');
+        // Keep the native ellipsis and New Session controls. CSS places this
+        // action after both original controls in the native flex action strip.
+        return h(React.Fragment, null,
+          h('style', null, workspacePinMarkerCss(id, openWorkspaceId === id, pinned)), ...(marker ? [marker] : []), original,
+          h('button', {type: 'button', className: `${owner.className || ''} dshsb-workspace-pin-action`.trim(),
+            'aria-label': label, title: label, 'aria-pressed': pinned, disabled: !writable,
+            draggable: false, onPointerDown: event => event.stopPropagation(),
+            onDragStart: event => { event.preventDefault(); event.stopPropagation(); },
+            onClick: event => { event.stopPropagation(); return toggleWorkspacePin(id); }},
+            h('span', {className: 'dshsb-workspace-pin-glyph', 'aria-hidden': true})));
+      };
+      return h(BrowserWithFilter, {...props, component: Component, actions, useWorkspaces, useSessions, renderFactorySlot,
+        fullWorkspaces: filtering ? snapshot.items : null});
+    }
 
     function catalog(name) {
-      const names = name === 'sidebar.panellist' ? [name, 'sidebar.footer.action'] : [name];
-      let version = '', revision = -1, rows = [];
+      let version = -1, revision = -1, rows = [];
       return {
         getSnapshot() {
-          const v = names.map(slot => ctx.slots.getVersion(slot)).join(':'), r = ctx.locale.getSnapshot().revision;
+          const v = ctx.slots.getVersion(name), r = ctx.locale.getSnapshot().revision;
           if (v !== version || r !== revision) {
             version = v; revision = r;
-            rows = ctx.slots.entriesOfSlot(name)
-              .filter(entry => name !== 'sidebar.footer.action' || isMenuEntry(entry.options)).map(entry => ({
+            rows = ctx.slots.entriesOfSlot(name).map(entry => ({
               id: entry.options.id,
               order: entry.options.order ?? 0,
               label: (typeof entry.options.label === 'function' ? entry.options.label() : entry.options.label) || entry.options.id,
             })).filter(row => typeof row.id === 'string');
-            if (name === 'sidebar.panellist') rows = withMore(mergeSidebarRows(rows, footerCatalog.getSnapshot()), t('more'));
+            if (name === 'sidebar.panellist') rows = sidebarRows(rows, t('more'));
           }
           return rows;
         },
         subscribe(fn) {
-          const subscriptions = names.map(slot => ctx.slots.subscribe(slot, fn));
-          subscriptions.push(ctx.locale.subscribe(fn));
-          return () => { for (const off of subscriptions) off(); };
+          const off = ctx.slots.subscribe(name, fn), offLocale = ctx.locale.subscribe(fn);
+          return () => { off(); offLocale(); };
         },
       };
     }
@@ -433,86 +693,199 @@ ${footerButton} svg{width:16px!important;height:16px!important;flex:none}
         name !== row.label ? h('button', {type: 'button', className: 'dshsb-button dshsb-name-reset', disabled: !writable,
           onClick: () => save(rename(source.getSnapshot().preferences, group, row.id, ''))}, t('defaultName')) : null);
     }
-    function Page() {
+    function Page({renderFactorySlot, renderSettingsIcon}) {
+      const [expanded, setExpanded] = React.useState(readPanelState);
+      const panelId = React.useId();
+      const root = React.useRef(null), dragging = React.useRef(null);
+      const [dragView, setDragView] = React.useState(null);
+      function releaseDrag() {
+        const drag = dragging.current;
+        dragging.current = null;
+        if (drag) {
+          drag.handle.ownerDocument.removeEventListener('keydown', drag.escape, true);
+          drag.handle.ownerDocument.defaultView.cancelAnimationFrame(drag.frame);
+          if (drag.handle.hasPointerCapture(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId);
+        }
+        return drag;
+      }
+      React.useEffect(() => () => { releaseDrag(); }, []);
+      function updateTarget(drag) {
+        const hit = drag.handle.ownerDocument.elementFromPoint(drag.x, drag.y)?.closest('[data-dshsb-row]');
+        const valid = hit && root.current?.contains(hit) && hit.dataset.dshsbGroup === drag.group;
+        const targetId = valid ? hit.dataset.dshsbRow : null;
+        const bounds = valid ? hit.getBoundingClientRect() : null;
+        const after = Boolean(bounds && drag.y >= bounds.top + bounds.height / 2);
+        if (drag.targetId === targetId && drag.after === after && drag.shown) return;
+        Object.assign(drag, {targetId, after, shown: true});
+        setDragView({group: drag.group, id: drag.id, targetId, after});
+      }
+      function dragFrame(drag) {
+        if (dragging.current !== drag) return;
+        // Scroll the settings content while a held handle approaches its edge.
+        const view = drag.handle.ownerDocument.defaultView;
+        for (let node = root.current?.parentElement; node; node = node.parentElement) {
+          if (node.scrollHeight <= node.clientHeight || !/(auto|scroll|overlay)/.test(view.getComputedStyle(node).overflowY)) continue;
+          const box = node.getBoundingClientRect();
+          const edge = Math.min(32, box.height / 4);
+          if (drag.x >= box.left && drag.x <= box.right && drag.y >= box.top && drag.y <= box.bottom) {
+            const delta = drag.y < box.top + edge ? -12 : drag.y > box.bottom - edge ? 12 : 0;
+            if (delta) node.scrollBy(0, delta);
+          }
+          break;
+        }
+        updateTarget(drag);
+        drag.frame = view.requestAnimationFrame(() => dragFrame(drag));
+      }
+      function beginDrag(event, group, id) {
+        if (!source.getSnapshot().writable || event.button !== 0 || dragging.current) return;
+        event.preventDefault();
+        const handle = event.currentTarget;
+        handle.focus({preventScroll: true});
+        handle.setPointerCapture(event.pointerId);
+        dragging.current = {handle, group, id, pointerId: event.pointerId,
+          startX: event.clientX, startY: event.clientY, x: event.clientX, y: event.clientY,
+          active: false, targetId: null, after: false, frame: 0,
+          escape: keyEvent => {
+            if (keyEvent.key !== 'Escape') return;
+            keyEvent.preventDefault(); keyEvent.stopPropagation(); finishDrag(null, false);
+          }};
+        handle.ownerDocument.addEventListener('keydown', dragging.current.escape, true);
+      }
+      function moveDrag(event) {
+        const drag = dragging.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        drag.x = event.clientX; drag.y = event.clientY;
+        if (!drag.active) {
+          if (Math.hypot(drag.x - drag.startX, drag.y - drag.startY) < 5) return;
+          drag.active = true;
+          dragFrame(drag);
+        } else updateTarget(drag);
+      }
+      function saveOrder(group, next) {
+        if (!source.getSnapshot().writable) return;
+        const rows = catalogs[group].getSnapshot(), current = source.getSnapshot().preferences;
+        const before = arrange(rows, current[group]), after = arrange(rows, next[group]);
+        if (before.length === after.length && before.every((row, i) => row.id === after[i].id)) return;
+        void save(next);
+      }
+      function finishDrag(event, commit) {
+        const drag = dragging.current;
+        if (!drag || (event && drag.pointerId !== event.pointerId)) return;
+        if (commit && drag.active) {
+          drag.x = event.clientX; drag.y = event.clientY;
+          updateTarget(drag);
+        }
+        releaseDrag();
+        setDragView(null);
+        if (!commit || !drag.active || !drag.targetId) return;
+        saveOrder(drag.group, reorder(source.getSnapshot().preferences, drag.group,
+          catalogs[drag.group].getSnapshot(), drag.id, drag.targetId, drag.after));
+      }
+      function handleDragKey(event, group, id) {
+        if (event.key === 'Escape' && dragging.current) {
+          event.preventDefault(); event.stopPropagation(); finishDrag(null, false); return;
+        }
+        const delta = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0;
+        if (!delta || dragging.current || !source.getSnapshot().writable) return;
+        event.preventDefault();
+        saveOrder(group, move(source.getSnapshot().preferences, group, catalogs[group].getSnapshot(), id, delta));
+      }
+      const togglePanel = group => {
+        const next = {...expanded, [group]: !expanded[group]};
+        setExpanded(next);
+        try { localStorage.setItem(PANELS_KEY, JSON.stringify(next)); } catch { /* Folding still works without storage. */ }
+      };
       const {preferences: state, status, writable} = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
-      React.useSyncExternalStore(fn => ctx.locale.subscribe(fn), () => ctx.locale.getSnapshot());
+      React.useSyncExternalStore(subscribeLocale, getLocaleSnapshot);
       const all = {
         sidebar: React.useSyncExternalStore(catalogs.sidebar.subscribe, catalogs.sidebar.getSnapshot),
         settings: React.useSyncExternalStore(catalogs.settings.subscribe, catalogs.settings.getSnapshot),
       };
-      return h('section', {className: 'dshsb-page'},
+      return h('section', {className: 'dshsb-page', ref: root},
         h('style', null, css),
-        h('h2', null, t('title')), h('p', null, t('description')),
         compatibility.length ? h('p', {role: 'alert', className: 'dshsb-error'}, t('compatibility')) : null,
-        h('div', {className: 'dshsb-toolbar'},
-          h('span', {role: 'status', 'aria-live': 'polite', className: 'dshsb-status' + (['error', 'offline', 'unavailable'].includes(status) ? ' dshsb-error' : '')}, t(status)),
-          h('button', {type: 'button', className: 'dshsb-button', disabled: !writable, onClick: () => save(normalize(null))}, t('reset'))),
-        h('p', {className: 'dshsb-note'}, t('hint')),
-        h('p', {className: 'dshsb-note'}, t('nameHint')),
+        h('div', {role: 'status', 'aria-live': 'polite',
+          className: 'dshsb-status' + (['error', 'offline', 'unavailable'].includes(status) ? ' dshsb-error' : '')},
+          status === 'saved' ? null : t(status)),
+        h('span', {className: 'dshsb-sr-only', id: `${panelId}-drag-hint`}, t('dragHint')),
         ...GROUPS.map(group => {
-          const rows = arrange(all[group], state[group], true);
-          const moreIndex = group === 'sidebar' ? rows.findIndex(row => row.id === MORE_ID) : -1;
+          const rows = arrange(all[group], state[group]);
+          const boundary = group === 'sidebar' ? rows.findIndex(row => row.id === MORE_ID) : -1;
           return h('section', {key: group, className: 'dshsb-card', 'aria-label': t(group)},
-            h('div', {className: 'dshsb-head'}, h('h3', null, t(group)),
-              h('button', {type: 'button', className: 'dshsb-button', disabled: !writable,
-                onClick: () => save({...source.getSnapshot().preferences, [group]: {order: [], hidden: []}})}, t('resetGroup'))),
+            h('div', {className: 'dshsb-head'},
+              h('h3', null, h('button', {type: 'button', className: 'dshsb-disclosure',
+                id: `${panelId}-${group}-toggle`, 'aria-expanded': expanded[group],
+                'aria-controls': `${panelId}-${group}`, onClick: () => togglePanel(group)},
+                h('span', {className: 'dshsb-chevron', 'aria-hidden': true}, '▶'), t(group)))),
+            h('div', {className: 'dshsb-panel', id: `${panelId}-${group}`, hidden: !expanded[group],
+              role: 'region', 'aria-labelledby': `${panelId}-${group}-toggle`},
+            group === 'sidebar' ? h('p', {className: 'dshsb-empty'}, t('moreHint')) : null,
             rows.length === 0 ? h('p', {className: 'dshsb-empty'}, t('empty')) : null,
-            ...rows.map((row, i) => {
-              const locked = isProtected(row.id), visible = locked || !state[group].hidden.includes(row.id);
-              return h('div', {key: row.id, className: 'dshsb-row' + (!visible ? ' dshsb-muted' : '')},
-                h('span', {className: 'dshsb-number', 'aria-hidden': true}, i + 1),
-                h('div', {className: 'dshsb-label'}, h(NameField, {group,
-                  row: all[group].find(entry => entry.id === row.id), name: row.label, writable}), h('span', {className: 'dshsb-id'},
-                  row.id === MORE_ID ? t('moreHint') : visible && moreIndex >= 0 && i > moreIndex ? t('inMore') : row.id)),
-                h('div', {className: 'dshsb-actions'},
-                  ...[-1, 1].map(delta => h('button', {
-                    key: delta, type: 'button', className: 'dshsb-button dshsb-arrow',
-                    title: t(delta < 0 ? 'up' : 'down'), 'aria-label': `${t(delta < 0 ? 'up' : 'down')} ${row.label}`,
-                    disabled: !writable || (delta < 0 ? i === 0 : i === rows.length - 1),
-                    onClick: () => save(move(source.getSnapshot().preferences, group, all[group], row.id, delta)),
-                  }, delta < 0 ? '↑' : '↓')),
-                  h('button', {type: 'button', className: 'dshsb-switch', role: 'switch', 'aria-checked': visible,
-                    'aria-label': `${t(visible ? 'hide' : 'show')} ${row.label}`, title: t(row.id === MORE_ID ? 'moreLockedHint' : locked ? 'lockHint' : visible ? 'hide' : 'show'),
-                    disabled: locked || !writable, onClick: () => save(toggle(source.getSnapshot().preferences, group, row.id)),
-                  }, h('span', {'aria-hidden': true}))));
-            }));
+            ...rows.map((row, i) => h('div', {key: row.id, className: 'dshsb-row',
+              'data-dshsb-row': row.id, 'data-dshsb-group': group,
+              'data-dragging': dragView?.group === group && dragView.id === row.id,
+              'data-drop': dragView?.group === group && dragView.targetId === row.id && dragView.id !== row.id
+                ? dragView.after ? 'after' : 'before' : undefined},
+              h('button', {type: 'button', className: 'dshsb-grip', disabled: !writable || rows.length < 2,
+                title: t('dragHint'), 'aria-label': `${t('drag')} ${row.label} (${i + 1}/${rows.length})`,
+                'aria-describedby': `${panelId}-drag-hint`,
+                onPointerDown: event => beginDrag(event, group, row.id),
+                onPointerMove: moveDrag, onPointerUp: event => finishDrag(event, true),
+                onPointerCancel: event => finishDrag(event, false), onLostPointerCapture: event => finishDrag(event, false),
+                onKeyDown: event => handleDragKey(event, group, row.id)},
+                h('svg', {width: 16, height: 20, viewBox: '0 0 16 20', fill: 'currentColor', 'aria-hidden': true, focusable: false},
+                  ...[5, 10, 15].flatMap(y => [5, 11].map(x => h('circle', {key: `${x}-${y}`, cx: x, cy: y, r: 1.4}))))),
+              h('span', {className: 'dshsb-icon', 'aria-hidden': true}, row.id === MORE_ID
+                ? h('svg', {width: 18, height: 18, viewBox: '0 0 18 18', fill: 'currentColor'},
+                  ...[3, 9, 15].map(cx => h('circle', {key: cx, cx, cy: 9, r: 1.5})))
+                : group === 'sidebar'
+                  ? renderFactorySlot('sidebar.panel.icon', {id: row.id, size: 18, active: false})
+                  : renderSettingsIcon?.(row.id, 16)),
+              h('div', {className: 'dshsb-label'}, row.id === MORE_ID ? h('strong', null, row.label) : h(NameField, {group,
+                row: all[group].find(entry => entry.id === row.id), name: row.label, writable}),
+                h('span', {className: row.id === MORE_ID || group === 'sidebar' && i > boundary ? 'dshsb-fold-state' : 'dshsb-id'},
+                  row.id === MORE_ID ? t('moreBoundary') : group === 'sidebar' && i > boundary ? t('folded') : row.id))))));
         }),
-        h('p', {className: 'dshsb-note'}, t('lockHint')),
-        h('p', {className: 'dshsb-note'}, t('fixed')));
+        h('section', {className: 'dshsb-card', 'aria-label': t('workspace')},
+          h('div', {className: 'dshsb-head'}, h('h3', null,
+            h('button', {type: 'button', className: 'dshsb-disclosure',
+              id: `${panelId}-workspace-toggle`, 'aria-expanded': expanded.workspace,
+              'aria-controls': `${panelId}-workspace`, onClick: () => togglePanel('workspace')},
+              h('span', {className: 'dshsb-chevron', 'aria-hidden': true}, '▶'), t('workspace')))),
+          h('div', {className: 'dshsb-panel', id: `${panelId}-workspace`, hidden: !expanded.workspace,
+            role: 'region', 'aria-labelledby': `${panelId}-workspace-toggle`},
+            h('div', {className: 'dshsb-row'},
+              h('div', {className: 'dshsb-setting-copy', id: `${panelId}-activity-label`}, t('activeIndicator'),
+                h('span', {className: 'dshsb-setting-hint', id: `${panelId}-activity-hint`}, t('activeIndicatorHint'))),
+              h('button', {type: 'button', className: 'dshsb-switch', role: 'switch', disabled: !writable,
+                'aria-checked': state.workspace?.activeIndicator === true,
+                'aria-labelledby': `${panelId}-activity-label`, 'aria-describedby': `${panelId}-activity-hint`,
+                onClick: () => {
+                  const current = source.getSnapshot().preferences;
+                  void save({...current, workspace: {...current.workspace, activeIndicator: current.workspace?.activeIndicator !== true}});
+                }}, h('span', {'aria-hidden': true}))),
+            h('div', {className: 'dshsb-row'},
+              h('div', {className: 'dshsb-setting-copy', id: `${panelId}-pin-label`}, t('pinWorkspace'),
+                h('span', {className: 'dshsb-setting-hint', id: `${panelId}-pin-hint`}, t('pinHint'))),
+              h('button', {type: 'button', className: 'dshsb-switch', role: 'switch', disabled: !writable,
+                'aria-checked': state.workspace?.pinning === true,
+                'aria-labelledby': `${panelId}-pin-label`, 'aria-describedby': `${panelId}-pin-hint`,
+                onClick: () => {
+                  const current = source.getSnapshot().preferences;
+                  void save({...current, workspace: {...current.workspace, pinning: current.workspace?.pinning !== true}});
+                }}, h('span', {'aria-hidden': true}))),
+            h('div', {className: 'dshsb-row'},
+              h('div', {className: 'dshsb-setting-copy'},
+                h('span', {id: `${panelId}-dynamic-label`}, t('dynamicSort')),
+                h('span', {className: 'dshsb-setting-hint', id: `${panelId}-dynamic-hint`}, t('dynamicSortHint'))),
+              h('button', {type: 'button', className: 'dshsb-switch', role: 'switch', disabled: !writable,
+                'aria-checked': state.workspace?.dynamicSort === true,
+                'aria-labelledby': `${panelId}-dynamic-label`, 'aria-describedby': `${panelId}-dynamic-hint`,
+                onClick: () => {
+                  const current = source.getSnapshot().preferences;
+                  void save({...current, workspace: {...current.workspace, dynamicSort: current.workspace?.dynamicSort !== true}});
+                }}, h('span', {'aria-hidden': true}))))));
     }
-    const moreCss = `
-.dshsb-more-entry{display:flex;align-items:center;justify-content:flex-start;gap:6px;box-sizing:border-box;width:100%;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);padding:6px 8px;text-align:start;font-family:inherit;font-size:13px;font-weight:400;line-height:20px;cursor:pointer;min-height:34px}
-.dshsb-more-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;flex:none;color:var(--dsw-alias-menu-icon)}.dshsb-more-check{margin-left:auto;flex:none}
-.dshsb-more-entry:hover,.dshsb-more-entry:focus-visible{background:var(--dsw-alias-interactive-bg-hover)}.dshsb-more-entry:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}.dshsb-more-entry[aria-current=page]{color:var(--dsw-alias-brand-primary)}.dshsb-more-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.dshsb-more-separator{height:.5px;background:var(--dsw-alias-border-l2);margin:3px 8px}
-`;
-    function MoreEntries({entries, onOpen, onDismiss, renderPanelIcon, renderFooterAction}) {
-      const folded = entries.filter(entry => !entry.pinned && entry.id !== MORE_ID);
-      const buttons = React.useRef([]);
-      return h(React.Fragment, null, h('style', null, moreCss),
-        ...folded.map((entry, index) => footerEntryId(entry.id) !== null
-          ? h('div', {key: entry.id}, renderFooterAction?.(entry.id, onDismiss, entry.label))
-          : h('button', {
-          key: entry.id, type: 'button', role: 'menuitem', tabIndex: 0,
-          ref: node => { buttons.current[index] = node; },
-          className: 'dshsb-more-entry', 'aria-current': entry.active ? 'page' : undefined,
-          onClick: () => { onDismiss(); onOpen(entry.id); },
-          onKeyDown: event => {
-            const delta = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
-            const next = index + delta;
-            if (delta && next >= 0 && next < folded.length && footerEntryId(folded[next].id) === null) {
-              event.preventDefault(); event.stopPropagation(); buttons.current[next]?.focus();
-            }
-            // Let the shell handle Escape and navigation to its own footer rows.
-          },
-        }, h('span', {className: 'dshsb-more-icon', 'aria-hidden': true}, renderPanelIcon?.(entry.id, entry.active)),
-          h('span', {className: 'dshsb-more-title'}, entry.label),
-          entry.active ? h('span', {className: 'dshsb-more-check', 'aria-hidden': true}, '✓') : null)),
-        folded.length ? h('div', {role: 'separator', className: 'dshsb-more-separator'}) : null);
-    }
-    ctx.slots.inject('sidebar.panellist.actions', () => ctx.slots.register({
-      name: 'sidebar.panellist.actions', id: 'dsh-sidebar-folded', order: -100,
-      label: () => t('more'),
-    }, MoreEntries));
     ctx.slots.inject('settings.section', () => ctx.slots.register({
       name: 'settings.section', id: OWN_ID, order: 50, label: () => t('title'),
     }, Page));

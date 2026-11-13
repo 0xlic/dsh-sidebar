@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {normalize, arrange, move, toggle, OWN_ID, replaceComponent} from '../src/model.js';
+import {normalize, arrange, move, reorder, rename, OWN_ID, replaceComponent} from '../src/model.js';
 
 test('navigation adapter preserves child ownership, injection and store', () => {
   const original = () => {}, replacement = () => {};
@@ -22,37 +22,148 @@ test('adapter cleanup does not overwrite a newer component', () => {
   assert.equal(entry.component, later);
 });
 const rows = [{id:'a',order:0},{id:'b',order:10},{id:'c',order:20},{id:OWN_ID,order:50}];
-test('normalization rejects malformed data and protects the manager', () => {
+test('normalization rejects malformed data and discards legacy hidden preferences', () => {
   const state = normalize({settings:{order:['a','a',null],hidden:[OWN_ID,'a','a',42]}});
-  assert.deepEqual(state.settings,{order:['a'],hidden:['a']});
-  assert.deepEqual(normalize(null).sidebar,{order:[],hidden:[]});
+  assert.deepEqual(state.settings,{order:['a']});
+  for (const value of [null, undefined, [], 42, {sidebar: {order: 'a', names: []}}]) {
+    assert.deepEqual(normalize(value), {sidebar:{order:[]},settings:{order:[]}});
+  }
+});
+test('active workspace indicator is opt-in, strictly boolean and retained by other preference changes', () => {
+  for (const activeIndicator of [true, false, 'true', 1, null]) {
+    const state = normalize({workspace: {activeIndicator, pinning: true}});
+    assert.equal(state.workspace.activeIndicator, activeIndicator === true);
+    assert.equal(rename(state, 'sidebar', 'a', 'A').workspace.activeIndicator, activeIndicator === true);
+  }
+  assert.equal(Object.hasOwn(normalize({workspace: {}}).workspace, 'activeIndicator'), false);
+});
+
+test('workspace normalization is opt-in, accepts only plain objects and uses strict booleans', () => {
+  const legacy = {sidebar: {order: ['a'], names: {a: 'A'}}, settings: {order: ['b']}};
+  assert.deepEqual(normalize(legacy), legacy);
+  for (const workspace of [undefined, null, [], true, false, 1, 'true', new Date(), new (class Workspace {})()]) {
+    assert.deepEqual(normalize({...legacy, workspace}), legacy);
+  }
+  for (const dynamicSort of [undefined, null, false, 0, 1, 'true', 'false', [], {}, new Boolean(true)]) {
+    assert.deepEqual(normalize({...legacy, workspace: {dynamicSort, pinned: ['a']}}), {...legacy, workspace: {dynamicSort: false}});
+  }
+  for (const workspace of [{dynamicSort: true, extra: 'discard'}, Object.assign(Object.create(null), {dynamicSort: true})]) {
+    const next = normalize({...legacy, workspace});
+    assert.deepEqual(next, {...legacy, workspace: {dynamicSort: true}});
+    assert.deepEqual(normalize(next), next);
+    assert.notEqual(next.workspace, workspace);
+  }
+});
+test('workspace pinning fields remain optional and normalize malformed values and duplicate IDs', () => {
+  assert.deepEqual(normalize({workspace: {}}).workspace, {dynamicSort: false});
+  for (const pinning of [undefined, null, false, 0, 1, 'true', 'false', [], {}, new Boolean(true)]) {
+    assert.deepEqual(normalize({workspace: {pinning}}).workspace, {dynamicSort: false, pinning: false});
+  }
+  assert.deepEqual(normalize({workspace: {pinning: true}}).workspace, {dynamicSort: false, pinning: true});
+  for (const pinnedWorkspaceIds of [undefined, null, true, 1, 'a', {}, new Set(['a'])]) {
+    assert.deepEqual(normalize({workspace: {pinnedWorkspaceIds}}).workspace, {dynamicSort: false, pinnedWorkspaceIds: []});
+  }
+  const workspace = {pinning: false, pinnedWorkspaceIds: ['a', '', null, 'b', 'a', 42, '  ', {}, ['c'], 'b', 'unloaded']};
+  const before = structuredClone(workspace), next = normalize({workspace});
+  assert.deepEqual(next.workspace, {dynamicSort: false, pinning: false, pinnedWorkspaceIds: ['a', 'b', 'unloaded']});
+  assert.deepEqual(normalize(next), next);
+  assert.deepEqual(workspace, before);
+  assert.notEqual(next.workspace.pinnedWorkspaceIds, workspace.pinnedWorkspaceIds);
+  const nullPrototype = Object.assign(Object.create(null), {pinning: true, pinnedWorkspaceIds: ['a', 'a']});
+  assert.deepEqual(normalize({workspace: nullPrototype}).workspace, {dynamicSort: false, pinning: true, pinnedWorkspaceIds: ['a']});
+});
+test('rename, move and reorder preserve workspace settings without mutating their input', () => {
+  for (const dynamicSort of [false, true]) for (const pinning of [undefined, false, true]) {
+    const workspace = {dynamicSort, ...(pinning === undefined ? {} : {pinning, pinnedWorkspaceIds: ['a', 'unloaded']})};
+    const state = normalize({workspace}), before = structuredClone(state);
+    for (const group of ['sidebar', 'settings']) {
+      for (const next of [
+        rename(state, group, 'a', 'A'),
+        rename(state, group, 'a', ''),
+        move(state, group, rows, 'b', -1),
+        move(state, group, rows, 'a', -1),
+        reorder(state, group, rows, 'c', 'a'),
+        reorder(state, group, rows, 'missing', 'a'),
+      ]) assert.deepEqual(next.workspace, workspace);
+    }
+    assert.deepEqual(state, before);
+  }
 });
 test('default preserves original order', () => {
   assert.deepEqual(arrange(rows,normalize(null).sidebar),rows);
 });
 test('custom order appends new plugins', () => {
-  assert.deepEqual(arrange(rows,{order:['c','a'],hidden:[]}).map(x=>x.id),['c','a','b',OWN_ID]);
+  assert.deepEqual(arrange(rows,{order:['c','a']}).map(x=>x.id),['c','a','b',OWN_ID]);
 });
-test('hidden manager remains visible even with tampered data', () => {
-  assert.deepEqual(arrange(rows,{order:[],hidden:['a',OWN_ID]}).map(x=>x.id),['b','c',OWN_ID]);
+test('legacy hidden data cannot hide any actual row, including the manager', () => {
+  assert.deepEqual(arrange(rows,{order:[],hidden:['a',OWN_ID]}),rows);
 });
-test('move includes hidden rows and preserves absent identities', () => {
-  let state=normalize({sidebar:{order:['a','b','c',OWN_ID,'absent'],hidden:['b']}});
+test('move preserves all rows, names and absent identities while dropping hidden data', () => {
+  let state=normalize({sidebar:{order:['a','b','c',OWN_ID,'absent'],hidden:['b'],names:{b:'Bee',absent:'Unloaded'}}});
   state=move(state,'sidebar',rows,'c',-1);
-  assert.deepEqual(state.sidebar.order,['a','c','b',OWN_ID,'absent']);
-  assert.deepEqual(state.sidebar.hidden,['b']);
+  assert.deepEqual(state.sidebar,{order:['a','c','b',OWN_ID,'absent'],names:{b:'Bee',absent:'Unloaded'}});
 });
-test('toggle can restore hidden rows but never hides manager', () => {
-  let state=toggle(normalize(null),'settings','a');
-  assert.deepEqual(state.settings.hidden,['a']);
-  assert.deepEqual(toggle(state,'settings','a').settings.hidden,[]);
-  assert.deepEqual(toggle(state,'settings',OWN_ID),state);
-});
-test('boundary movement is harmless and leaves input immutable', () => {
+test('boundary and missing-row movement are harmless and leave input immutable', () => {
   const state=normalize(null), before=structuredClone(state);
   assert.deepEqual(move(state,'sidebar',rows,'a',-1),state);
+  assert.deepEqual(move(state,'sidebar',rows,OWN_ID,1),state);
+  assert.deepEqual(move(state,'sidebar',rows,'missing',1),state);
   move(state,'sidebar',rows,'b',-1);
   assert.deepEqual(state,before);
+});
+test('reorder inserts first at last and last at first without swapping intermediate rows', () => {
+  const state = normalize(null);
+  assert.deepEqual(reorder(state, 'sidebar', rows, 'a', OWN_ID, true).sidebar.order, ['b', 'c', OWN_ID, 'a']);
+  assert.deepEqual(reorder(state, 'sidebar', rows, OWN_ID, 'a').sidebar.order, [OWN_ID, 'a', 'b', 'c']);
+});
+test('reorder inserts before and after targets using positions after removing the source', () => {
+  const state = normalize(null);
+  for (const [id, targetId, after, expected] of [
+    ['a', 'c', false, ['b', 'a', 'c', OWN_ID]],
+    ['a', 'c', true, ['b', 'c', 'a', OWN_ID]],
+    [OWN_ID, 'b', false, ['a', OWN_ID, 'b', 'c']],
+    [OWN_ID, 'b', true, ['a', 'b', OWN_ID, 'c']],
+  ]) {
+    assert.deepEqual(reorder(state, 'sidebar', rows, id, targetId, after).sidebar.order, expected);
+  }
+});
+test('reorder uses arranged order and preserves names, unloaded identities and other groups immutably', () => {
+  const state = normalize({
+    sidebar: {order: ['unloaded-before', 'c', 'a', 'unloaded-after', 'b', OWN_ID], names: {a: 'A renamed', 'unloaded-before': 'Pending'}},
+    settings: {order: ['settings-only', 'a'], names: {a: 'Settings A'}},
+  });
+  const before = structuredClone(state), originalRows = structuredClone(rows);
+  const next = reorder(state, 'sidebar', rows, 'b', 'c');
+  assert.deepEqual(next.sidebar, {
+    order: ['b', 'c', 'a', OWN_ID, 'unloaded-before', 'unloaded-after'],
+    names: {a: 'A renamed', 'unloaded-before': 'Pending'},
+  });
+  assert.deepEqual(next.settings, state.settings);
+  assert.deepEqual(state, before);
+  assert.deepEqual(rows, originalRows);
+  const settingsNext = reorder(state, 'settings', rows, 'c', 'a');
+  assert.deepEqual(settingsNext.settings.order, ['c', 'a', 'b', OWN_ID, 'settings-only']);
+  assert.deepEqual(settingsNext.sidebar, state.sidebar);
+});
+test('reorder self, adjacent positions, missing or unloaded IDs and invalid groups are noops', () => {
+  const state = normalize({sidebar: {order: ['unloaded'], names: {a: 'A'}}});
+  const before = structuredClone(state);
+  for (const [group, id, targetId, after] of [
+    ['sidebar', 'b', 'b', false],
+    ['sidebar', 'b', 'b', true],
+    ['sidebar', 'a', 'b', false],
+    ['sidebar', 'b', 'a', true],
+    ['sidebar', 'missing', 'a', false],
+    ['sidebar', 'a', 'missing', false],
+    ['sidebar', 'unloaded', 'a', false],
+    ['sidebar', 'a', 'unloaded', false],
+    ['sidebar', 'a', 'settings-only', false],
+    ['unknown', 'a', 'b', true],
+  ]) {
+    assert.deepEqual(reorder(state, group, rows, id, targetId, after), state);
+  }
+  assert.deepEqual(reorder(state, 'sidebar', [], 'a', 'b'), state);
+  assert.deepEqual(state, before);
 });
 test('reset restores all builtin navigation', () => {
   assert.deepEqual(arrange(rows,normalize(null).settings),rows);

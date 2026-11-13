@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Customize sidebar and settings navigation order and visibility with a protected settings entry.",
+  "description": "Customize sidebar and settings navigation order and names while preserving native pinning and icons.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -28,8 +28,11 @@
     "client": {
       "platform": "web",
       "immediately": true,
+      "external": ["@deepseek-ai/dsh-client-ui-primitives"],
       "inject": [
         "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-context-menu",
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-settings-general",
