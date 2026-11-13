@@ -27,6 +27,8 @@ const dicts = {
     activityOngoing: '工作区有运行中的会话', activityWarning: '工作区有等待交互的会话',
     pinHint: '悬停工作区后，点击右侧图钉切换置顶，优先于动态排序。',
     pinAction: '置顶工作区', unpinAction: '取消置顶工作区', pinFailed: '工作区置顶设置保存失败，请重试。',
+    collapseOneClick: '工作区一键折叠', collapseOneClickHint: '在「工作区」右侧显示一键折叠按钮；关闭后隐藏按钮，视图选项中的折叠动作也不可用。',
+    collapseAll: '折叠所有工作区',
     filterWorkspaces: '筛选工作区', onlyPinned: '仅显示固定工作区', filterFailed: '工作区筛选设置保存失败，请重试。',
     dynamicSort: '动态调整工作区排序', dynamicSortHint: '仅在「按工作区」和「最近更新」时生效，最近有会话更新的工作区排在最前。',
     empty: '当前没有可调整的导航项目。', compatibility: '部分导航接口不兼容，相关导航已保留原样。',
@@ -46,6 +48,8 @@ const dicts = {
     activityOngoing: 'Workspace has running sessions', activityWarning: 'Workspace has sessions awaiting interaction',
     pinHint: 'Hover a workspace and click its rightmost pin to toggle pinning, ahead of dynamic sorting.',
     pinAction: 'Pin workspace', unpinAction: 'Unpin workspace', pinFailed: 'Could not save workspace pinning. Please retry.',
+    collapseOneClick: 'One-click workspace collapse', collapseOneClickHint: 'Show the collapse-all button beside Search; when off, the button is hidden and the view-menu action is unavailable.',
+    collapseAll: 'Collapse all workspaces',
     filterWorkspaces: 'Filter workspaces', onlyPinned: 'Only show pinned workspaces', filterFailed: 'Could not save workspace filtering. Please retry.',
     dynamicSort: 'Dynamically reorder workspaces', dynamicSortHint: 'Only with By workspace and Recently updated: workspaces with the most recently updated sessions come first.',
     empty: 'No navigation entries are available.', compatibility: 'Some navigation APIs are incompatible. Affected navigation was left unchanged.',
@@ -199,6 +203,7 @@ return {
               onlyPinned: enabled && preferences.workspace?.onlyPinned === true,
               pinning: enabled && preferences.workspace?.pinning === true,
               activeIndicator: enabled && preferences.workspace?.activeIndicator === true,
+              collapseOneClick: enabled && preferences.workspace?.collapseOneClick !== false,
               pinnedWorkspaceIds: preferences.workspace?.pinnedWorkspaceIds || EMPTY_WORKSPACE_PINS});
           }
           patches.set(entry, replaceComponent(entry, WorkspaceAdapter));
@@ -208,14 +213,23 @@ return {
       sync();
       return () => { off(); enabled = false; for (const restore of patches.values()) restore(); source.refresh(); };
     });
+    // Native chevron geometry at the regular 1px stroke; two inward chevrons
+    // express "collapse all" without the heavier custom glyph used before.
+    function collapseAllIcon() {
+      return h('svg', {width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
+        'stroke-width': 1, 'aria-hidden': true, focusable: false},
+        h('path', {d: 'M4 3.5L7.29289 6.79289C7.68342 7.18342 8.31658 7.18342 8.70711 6.79289L12 3.5'}),
+        h('path', {d: 'M4 12.5L7.29289 9.20711C7.68342 8.81658 8.31658 8.81658 8.70711 9.20711L12 12.5'}));
+    }
     // The installed Browser has no view-menu contribution slot. Adapt only its
     // identifiable ViewOptionsMenu element, retaining the native Menu and actions.
-    function FilterMenu({component: Component, ...props}) {
+    function FilterMenu({component: Component, collapseAllAvailable, onCollapseAllWorkspaces, ...props}) {
       const {preferences, writable} = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
       React.useSyncExternalStore(subscribeLocale, getLocaleSnapshot);
       const menu = Component(props);
       if (!Array.isArray(menu?.props?.items) || !menu.props.items.some(item => item.id === 'only-archived')) return menu;
       const id = 'dshsb-only-pinned';
+      const collapseId = 'dshsb-collapse-workspaces';
       return React.cloneElement(menu, {
         items: [...menu.props.items,
           {type: 'separator', id: 'dshsb-workspace-filter-separator'},
@@ -224,9 +238,19 @@ return {
             fill: 'none', stroke: 'currentColor', 'stroke-width': 1, 'aria-hidden': true, focusable: false},
             h('path', {d: WORKSPACE_PIN_PATHS[0], 'stroke-linejoin': 'round'}),
             h('path', {d: WORKSPACE_PIN_PATHS[1], fill: 'currentColor'})),
-            disabled: !writable || props.groupBy !== 'workspace'}],
+            disabled: !writable || props.groupBy !== 'workspace'},
+          {type: 'separator', id: 'dshsb-collapse-separator'},
+          {id: collapseId, label: t('collapseAll'), icon: collapseAllIcon(),
+            disabled: !collapseAllAvailable || typeof onCollapseAllWorkspaces !== 'function'}],
         selectedIds: [...(menu.props.selectedIds || []), ...(preferences.workspace?.onlyPinned ? [id] : [])],
         onSelect: selected => {
+          if (selected === collapseId) {
+            // Collapsing is a local viewing action, like the native group rows;
+            // close first and then write every Workspace's explicit state.
+            menu.props.onClose?.();
+            if (collapseAllAvailable) onCollapseAllWorkspaces();
+            return;
+          }
           if (selected !== id) return menu.props.onSelect(selected);
           // Close like the native items; the preferences controller applies the
           // optimistic value immediately, so the list updates without waiting.
@@ -238,13 +262,31 @@ return {
         },
       });
     }
-    function BrowserWithFilter({component: Component, fullWorkspaces, ...props}) {
+    function BrowserWithFilter({component: Component, fullWorkspaces, collapseAllAvailable,
+      onCollapseAllWorkspaces, ...props}) {
       function adapt(node) {
         if (Array.isArray(node)) return node.map(adapt);
         if (!React.isValidElement(node)) return node;
         if (typeof node.type === 'function' && typeof node.props.onArchivedFilterPick === 'function' &&
             typeof node.props.onGroupPick === 'function') {
-          return h(FilterMenu, {...node.props, component: node.type, key: node.key});
+          return h(FilterMenu, {...node.props, component: node.type, key: node.key, collapseAllAvailable,
+            onCollapseAllWorkspaces});
+        }
+        // The native action cluster has room for only its own two buttons, so
+        // this control is a direct header child placed immediately before the
+        // search slot: the fourth icon, leftmost in the right-side group.
+        if (props.wide !== false && collapseAllAvailable && typeof onCollapseAllWorkspaces === 'function' &&
+            node.props['data-sidebar-workspace-header'] !== undefined) {
+          const children = node.props.children === undefined ? []
+            : Array.isArray(node.props.children) ? node.props.children : [node.props.children];
+          const label = t('collapseAll');
+          const adapted = children.map(child => adapt(child));
+          adapted.splice(Math.min(1, adapted.length), 0, h(React.Fragment, {key: 'dshsb-collapse-all-control'},
+            h('style', null, WORKSPACE_COLLAPSE_ALL_CSS),
+            h('button', {type: 'button', className: 'dshsb-collapse-all', title: label, 'aria-label': label,
+              onClick: onCollapseAllWorkspaces},
+              collapseAllIcon())));
+          return React.cloneElement(node, {}, adapted);
         }
         // Rename validates duplicates against the full registry, so the dialog
         // must keep every Workspace even while the sidebar hides some.
@@ -257,7 +299,8 @@ return {
       }
       return adapt(Component(props));
     }
-    function WorkspaceProjection({component: Component, active, pinning, onlyPinned, activeIndicator, pinnedWorkspaceIds, ...props}) {
+    function WorkspaceProjection({component: Component, active, pinning, onlyPinned, activeIndicator, collapseOneClick,
+      pinnedWorkspaceIds, ...props}) {
       const snapshot = props.useWorkspaces(identity);
       const byId = props.useSessions(state => state.byId);
       // Never subscribe the ordering projection to the whole viewing store:
@@ -299,6 +342,15 @@ return {
         ? {...actionSource, retainAccountKeys: keys => actionSource.retainAccountKeys(
           [...new Set([...keys, ...retainedWorkspaceIds.current])])}
         : actionSource, [actionSource]);
+      const collapseAvailable = typeof actionSource?.setGroupExpanded === 'function';
+      const workspaceIds = React.useMemo(() => snapshot.items.map(workspace => workspace.workspaceId)
+        .filter(id => typeof id === 'string' && id), [snapshot]);
+      const collapseAllWorkspaces = () => {
+        if (!collapseAvailable) return;
+        // Collapse only; expanding stays with the native Workspace rows. The
+        // action is intentionally repeatable and never disables itself.
+        for (const id of workspaceIds) actionSource.setGroupExpanded(id, false);
+      };
       const renderFactorySlot = (name, owner, ...args) => {
         const original = props.renderFactorySlot(name, owner, ...args);
         const id = owner?.target?.kind === 'workspace' ? owner.target.value.workspaceId : null;
@@ -323,7 +375,9 @@ return {
             h('span', {className: 'dshsb-workspace-pin-glyph', 'aria-hidden': true})));
       };
       return h(BrowserWithFilter, {...props, component: Component, actions, useWorkspaces, useSessions, renderFactorySlot,
-        fullWorkspaces: filtering ? snapshot.items : null});
+        fullWorkspaces: filtering ? snapshot.items : null,
+        collapseAllAvailable: collapseOneClick && collapseAvailable && workspaceIds.length > 0 && groupBy !== 'flat',
+        onCollapseAllWorkspaces: collapseAllWorkspaces});
     }
 
     function catalog(name) {
@@ -555,6 +609,18 @@ return {
                 onClick: () => {
                   const current = source.getSnapshot().preferences;
                   void save({...current, workspace: {...current.workspace, pinning: current.workspace?.pinning !== true}});
+                }}, h('span', {'aria-hidden': true}))),
+            h('div', {className: 'dshsb-row'},
+              h('div', {className: 'dshsb-setting-copy', id: `${panelId}-collapse-one-click-label`}, t('collapseOneClick'),
+                h('span', {className: 'dshsb-setting-hint', id: `${panelId}-collapse-one-click-hint`}, t('collapseOneClickHint'))),
+              h('button', {type: 'button', className: 'dshsb-switch', role: 'switch', disabled: !writable,
+                'aria-checked': state.workspace?.collapseOneClick !== false,
+                'aria-labelledby': `${panelId}-collapse-one-click-label`,
+                'aria-describedby': `${panelId}-collapse-one-click-hint`,
+                onClick: () => {
+                  const current = source.getSnapshot().preferences;
+                  const enabled = current.workspace?.collapseOneClick !== false;
+                  void save({...current, workspace: {...current.workspace, collapseOneClick: !enabled}});
                 }}, h('span', {'aria-hidden': true}))),
             h('div', {className: 'dshsb-row'},
               h('div', {className: 'dshsb-setting-copy'},

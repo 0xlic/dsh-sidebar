@@ -39,18 +39,19 @@ test('host schema exposes menu order/names and optional workspace sorting as liv
 });
 
 test('host workspace schema defaults to disabled sorting/pinning and empty IDs and rejects malformed values', () => {
-  const defaults = {dynamicSort: false, pinning: false, onlyPinned: false, activeIndicator: false, pinnedWorkspaceIds: []};
+  const defaults = {dynamicSort: false, pinning: false, onlyPinned: false, activeIndicator: false, collapseOneClick: true, pinnedWorkspaceIds: []};
   for (const [workspace, expected] of [
     [null, null], [{}, defaults], [{dynamicSort: false}, defaults],
     [{dynamicSort: true}, {...defaults, dynamicSort: true}],
     [{onlyPinned: true}, {...defaults, onlyPinned: true}],
     [{activeIndicator: true}, {...defaults, activeIndicator: true}],
+    [{collapseOneClick: false}, {...defaults, collapseOneClick: false}],
     [{pinning: true, pinnedWorkspaceIds: ['a', 'unloaded']}, {...defaults, pinning: true, pinnedWorkspaceIds: ['a', 'unloaded']}],
     [{pinning: false, pinnedWorkspaceIds: ['a']}, {...defaults, pinnedWorkspaceIds: ['a']}],
   ]) {
     assert.deepEqual(Config({preferences: {workspace}}).preferences.get().workspace, expected);
   }
-  for (const field of ['dynamicSort', 'pinning', 'onlyPinned', 'activeIndicator']) for (const value of ['true', 'false', 0, 1, [], {}]) {
+  for (const field of ['dynamicSort', 'pinning', 'onlyPinned', 'activeIndicator', 'collapseOneClick']) for (const value of ['true', 'false', 0, 1, [], {}]) {
     assert.throws(() => Config({preferences: {workspace: {[field]: value}}}).preferences.get(), /expected boolean/);
   }
   for (const pinnedWorkspaceIds of ['a', true, 1, {}, [1], ['a', {}]]) {

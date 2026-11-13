@@ -102,3 +102,14 @@ ${menuOpen ? `${strip}{display:inline-flex}` : ''}
 @media(hover:hover){${row}:hover::after{display:none}}
 @media(hover:none){${row}[aria-expanded="true"]::after{display:none}}`;
 }
+
+// Fixed styling for the one-click collapse control in the Workspace section
+// header. The native action cluster clips a third button, so this control is a
+// direct header child immediately before the search slot and supplies the
+// group's push-right margin itself.
+export const WORKSPACE_COLLAPSE_ALL_CSS = `
+.dshsb-collapse-all{flex:none;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;margin-left:auto;border:0;border-radius:var(--dsw-radius-sm);padding:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}
+@media(hover:hover){.dshsb-collapse-all:hover{background:var(--dsw-alias-interactive-bg-hover)}}
+.dshsb-collapse-all:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}
+[data-sidebar-workspace-header]:has(>.dshsb-collapse-all)>:has(input){margin-left:0}
+[data-sidebar-workspace-header]:has(input:not([tabindex="-1"]))>.dshsb-collapse-all{display:none}`;

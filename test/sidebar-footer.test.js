@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {normalize} from '../src/model.js';
+import {WORKSPACE_COLLAPSE_ALL_CSS} from '../src/workspace.js';
 
 const panel = {id: 'plugins', label: 'Plugins', order: 10};
 const action = {id: 'mobile-gateway-devices', label: '移动设备', order: 80};
@@ -437,6 +438,12 @@ test('workspace settings folds independently and its switches persist without cl
   assert.equal(pinToggle().props['aria-checked'], false);
   pinToggle().props.onClick(); await Promise.resolve();
   assert.equal(env.writes.at(-1).workspace.pinning, true);
+  const collapseSwitch = () => findElement(env.page(), node => node.props?.['aria-labelledby'] === 'test-panels-collapse-one-click-label');
+  assert.equal(collapseSwitch().props.disabled, false);
+  assert.equal(collapseSwitch().props['aria-checked'], true, 'one-click collapse is on by default');
+  collapseSwitch().props.onClick(); await Promise.resolve();
+  assert.equal(env.writes.at(-1).workspace.collapseOneClick, false);
+  assert.equal(env.writes.at(-1).workspace.pinning, true, 'the switch merges with pinning');
   disclosure(tree, 'workspace').props.onClick();
   tree = env.page();
   assert.equal(panelRegion(tree, 'workspace').props.hidden, false);
@@ -455,6 +462,7 @@ test('workspace settings folds independently and its switches persist without cl
   env.form.update({writable:false});
   assert.equal(toggle().props.disabled,true);
   assert.equal(pinToggle().props.disabled,true);
+  assert.equal(collapseSwitch().props.disabled,true);
 });
 
 test('active workspace switch persists independently, reuses native StateDot and updates with live activity', async () => {
@@ -601,9 +609,13 @@ test('workspace filter menu follows archive group, toggles durably, and leaves n
   let node = menu();
   assert.equal(node.type, NativeMenu);
   assert.equal(node.props.portal, true);
-  assert.deepEqual(Array.from(node.props.items, item => item.id), ['filter-by', 'only-archived', 'dshsb-workspace-filter-separator', 'dshsb-workspace-filter', 'dshsb-only-pinned']);
-  assert.equal(node.props.items.at(-1).label, 'onlyPinned');
-  assert.equal(node.props.items.at(-1).icon.type, 'svg');
+  assert.deepEqual(Array.from(node.props.items, item => item.id), ['filter-by', 'only-archived', 'dshsb-workspace-filter-separator', 'dshsb-workspace-filter', 'dshsb-only-pinned', 'dshsb-collapse-separator', 'dshsb-collapse-workspaces']);
+  const pinnedItem = () => menu().props.items.find(item => item.id === 'dshsb-only-pinned');
+  const collapseItem = () => menu().props.items.find(item => item.id === 'dshsb-collapse-workspaces');
+  assert.equal(pinnedItem().label, 'onlyPinned');
+  assert.equal(pinnedItem().icon.type, 'svg');
+  assert.equal(collapseItem().label, 'collapseAll', 'unrecorded expansion counts as collapsed');
+  assert.equal(collapseItem().disabled, true, 'no store writer is available in this native fixture');
   await node.props.onSelect('updated');
   assert.deepEqual(selected, ['updated']);
   await node.props.onSelect('dshsb-only-pinned');
@@ -616,7 +628,8 @@ test('workspace filter menu follows archive group, toggles durably, and leaves n
   assert.deepEqual(dialogWorkspaces(), snapshot.items);
   assert.ok(menu().props.selectedIds.includes('dshsb-only-pinned'));
   for (groupBy of ['workspace-tree', 'flat']) {
-    assert.equal(menu().props.items.at(-1).disabled, true);
+    assert.equal(pinnedItem().disabled, true);
+    assert.equal(collapseItem().disabled, true);
     assert.equal(project().props.useWorkspaces(x => x), snapshot);
     assert.equal(project().props.useSessions(x => x), sessions);
     await menu().props.onSelect('dshsb-only-pinned');
@@ -627,7 +640,7 @@ test('workspace filter menu follows archive group, toggles durably, and leaves n
   assert.equal(env.writes.at(-1).workspace.onlyPinned, false);
   assert.equal(project().props.useWorkspaces(x => x), snapshot);
   env.form.update({writable: false});
-  assert.equal(menu().props.items.at(-1).disabled, true);
+  assert.equal(pinnedItem().disabled, true);
 });
 
 function workspacePinRow(env, id = 'a') {
@@ -742,6 +755,117 @@ test('workspace pin is a third native-styled row action, suppresses parent click
   env.menuActive.set({kind: 'workspace', value: {workspaceId: 'a'}});
   assert.match(findElement(workspacePinRow(env).element, n => n.type === 'style').props.children, /content:"";display:none/);
   assert.equal(env.menuContributions.length, 0);
+});
+
+test('view options collapse all only collapses and never expands rendered workspaces', async () => {
+  const env = runtime();
+  let groupBy = 'workspace', groupExpansion = {}, closed = 0;
+  const calls = [];
+  const NativeMenu = () => null;
+  function ViewMenu() {
+    return React.createElement(NativeMenu, {items: [{type: 'label', id: 'filter-by'}, {id: 'only-archived'}],
+      selectedIds: [], onClose() { closed++; }, onSelect(id) { calls.push(['native', id]); }});
+  }
+  const snapshot = {items: [{workspaceId: 'a'}, {workspaceId: 'b'}]};
+  const actions = {retainAccountKeys() {}, setGroupExpanded(id, expanded) {
+    calls.push(['set', id, expanded]); groupExpansion = {...groupExpansion, [id]: expanded};
+  }};
+  const project = () => {
+    const bridge = env.browser.component({useWorkspaces: selector => selector(snapshot),
+      useSessions: selector => selector({ids: [], byId: {}}),
+      useStore: selector => selector({groupBy, orderBy: 'updated', groupExpansion}), actions,
+      nativeTree: React.createElement(ViewMenu, {onGroupPick() {}, onArchivedFilterPick() {}})});
+    return bridge.type(bridge.props);
+  };
+  const menu = () => {
+    const browser = project(), filterMenu = browser.type(browser.props);
+    return filterMenu.type(filterMenu.props);
+  };
+  const collapse = () => menu().props.items.find(item => item.id === 'dshsb-collapse-workspaces');
+  assert.equal(collapse().label, 'collapseAll');
+  assert.equal(collapse().disabled, false, 'the action stays available for repeated clicks');
+  const writesBefore = env.writes.length;
+  await menu().props.onSelect('dshsb-collapse-workspaces');
+  assert.deepEqual(calls, [['set', 'a', false], ['set', 'b', false]]);
+  assert.equal(closed, 1);
+  assert.equal(env.writes.length, writesBefore, 'collapsing stays in the native view store');
+  assert.equal(collapse().label, 'collapseAll', 'the menu never offers an expand action');
+  assert.equal(collapse().disabled, false, 'repeated clicks remain available');
+  calls.length = 0;
+  await menu().props.onSelect('dshsb-collapse-workspaces');
+  assert.deepEqual(calls, [['set', 'a', false], ['set', 'b', false]], 'a second click collapses again, never expands');
+  groupBy = 'flat';
+  assert.equal(collapse().disabled, true);
+  groupBy = 'workspace-tree';
+  assert.equal(collapse().disabled, false, 'tree mode still collapses every rendered Workspace');
+  calls.length = 0;
+  await menu().props.onSelect('dshsb-collapse-workspaces');
+  assert.deepEqual(calls, [['set', 'a', false], ['set', 'b', false]]);
+  calls.length = 0;
+  await menu().props.onSelect('only-archived');
+  assert.deepEqual(calls, [['native', 'only-archived']]);
+  const withoutWriter = env.browser.component({useWorkspaces: selector => selector(snapshot),
+    useSessions: selector => selector({ids: [], byId: {}}),
+    useStore: selector => selector({groupBy: 'workspace', orderBy: 'updated', groupExpansion: {}}),
+    actions: {retainAccountKeys() {}}, nativeTree: React.createElement(ViewMenu, {onGroupPick() {}, onArchivedFilterPick() {}})});
+  const browser = withoutWriter.type(withoutWriter.props);
+  const filterMenu = browser.type(browser.props), plain = filterMenu.type(filterMenu.props);
+  assert.equal(plain.props.items.find(item => item.id === 'dshsb-collapse-workspaces').disabled, true);
+});
+
+test('workspace header places one-click collapse-all immediately before search and toggles every workspace', async () => {
+  const env = runtime();
+  let groupBy = 'workspace', groupExpansion = {a: true};
+  const calls = [];
+  const actions = {retainAccountKeys() {}, setGroupExpanded(id, expanded) { calls.push([id, expanded]); }};
+  const snapshot = {items: [{workspaceId: 'a'}, {workspaceId: 'b'}]};
+  const ViewMenu = () => React.createElement('NativeMenu', {items: [{id: 'only-archived'}], onClose() {}, onSelect() {}});
+  const header = () => React.createElement('div', {'data-sidebar-workspace-header': '', 'data-native': true},
+    React.createElement('span', {key: 'label'}, '工作区'),
+    React.createElement('div', {key: 'search'}),
+    React.createElement('div', {key: 'actions'}, React.createElement(ViewMenu, {onGroupPick() {}, onArchivedFilterPick() {}})));
+  const project = (overrides = {}) => {
+    const bridge = env.browser.component({useWorkspaces: selector => selector(snapshot),
+      useSessions: selector => selector({ids: [], byId: {}}),
+      useStore: selector => selector({groupBy, orderBy: 'updated', groupExpansion}),
+      actions, wide: true, nativeTree: header(), ...overrides});
+    return bridge.type(bridge.props);
+  };
+  const tree = project().type(project().props);
+  assert.equal(tree.props['data-sidebar-workspace-header'], '');
+  assert.equal(tree.props.children[0].key, 'label');
+  assert.equal(tree.props.children[1].key, 'dshsb-collapse-all-control', 'control sits immediately before search');
+  assert.equal(tree.props.children[2].key, 'search');
+  const headerButton = () => findElement(tree, node => node.props?.className === 'dshsb-collapse-all');
+  assert.equal(headerButton().props['aria-label'], 'collapseAll');
+  const icon = headerButton().props.children;
+  assert.equal(icon.type, 'svg');
+  assert.equal(icon.props['stroke-width'], 1);
+  assert.equal(icon.props.children.length, 2);
+  assert.equal(findElement(tree, node => node.type === 'style').props.children, WORKSPACE_COLLAPSE_ALL_CSS);
+  assert.match(WORKSPACE_COLLAPSE_ALL_CSS, /input:not\(\[tabindex="-1"\]\)/);
+  assert.match(WORKSPACE_COLLAPSE_ALL_CSS, />\.dshsb-collapse-all\{display:none\}/);
+  await findElement(tree, node => node.props?.className === 'dshsb-collapse-all').props.onClick();
+  assert.deepEqual(calls, [['a', false], ['b', false]]);
+  calls.length = 0;
+  const repeatTree = project().type(project().props);
+  const repeat = findElement(repeatTree, node => node.props?.className === 'dshsb-collapse-all');
+  assert.equal(repeat.props['aria-label'], 'collapseAll', 'the control never offers an expand action');
+  assert.equal(repeat.props.disabled, undefined, 'the control stays clickable');
+  await repeat.props.onClick();
+  assert.deepEqual(calls, [['a', false], ['b', false]], 'a repeated click collapses again, never expands');
+  groupBy = 'flat';
+  assert.equal(findElement(project().type(project().props), node => node.props?.className === 'dshsb-collapse-all'), undefined);
+  groupBy = 'workspace';
+  assert.equal(findElement(project({wide: false}).type(project({wide: false}).props), node => node.props?.className === 'dshsb-collapse-all'), undefined);
+  const noWriter = env.browser.component({useWorkspaces: selector => selector(snapshot),
+    useSessions: selector => selector({ids: [], byId: {}}),
+    useStore: selector => selector({groupBy: 'workspace', orderBy: 'updated', groupExpansion: {}}),
+    actions: {retainAccountKeys() {}}, wide: true, nativeTree: header()});
+  assert.equal(findElement(noWriter.type(noWriter.props).type(noWriter.type(noWriter.props).props), node => node.props?.className === 'dshsb-collapse-all'), undefined);
+  findElement(env.page(), node => node.props?.['aria-labelledby'] === 'test-panels-collapse-one-click-label').props.onClick();
+  await Promise.resolve();
+  assert.equal(findElement(project().type(project().props), node => node.props?.className === 'dshsb-collapse-all'), undefined, 'turning the setting off hides the header control');
 });
 
 test('native workspace account reconciliation cannot retrigger sorting in an update loop', async () => {
