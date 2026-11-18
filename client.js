@@ -230,8 +230,8 @@ function rankWorkspaces(snapshot, sessions, view, enabled, pinOptions) {
   const onlyPinned = pinOptions.onlyPinned === true && view?.groupBy === 'workspace';
   const visiblePins = new Set(pinOptions.pinnedWorkspaceIds || []);
   if ((!dynamic && pinned.size === 0 && !onlyPinned) || !Array.isArray(snapshot?.items)) return null;
-  const archived = new Set(snapshot.archivedSessionIds || []);
-  const filter = view?.archivedFilter || 'default';
+  // Archival changes visibility, not activity. Keep archived members in the
+  // ranking so hiding the newest session does not move its workspace.
   const items = onlyPinned ? snapshot.items.filter(workspace => visiblePins.has(workspace.workspaceId)) : snapshot.items;
   const ranked = items.map((workspace, index) => {
     let updatedAt = -Infinity;
@@ -239,7 +239,6 @@ function rankWorkspaces(snapshot, sessions, view, enabled, pinOptions) {
       const session = sessions?.byId?.[id];
       if (!session || session.origin === 'subagent') continue;
       if (session.blank && !(session.retainedBy?.mainView > 0)) continue;
-      if (filter === 'only' ? !archived.has(id) : filter !== 'show' && archived.has(id)) continue;
       if (typeof session.updatedAt === 'number' && Number.isFinite(session.updatedAt)) updatedAt = Math.max(updatedAt, session.updatedAt);
     }
     return {workspace, index, updatedAt};
@@ -274,7 +273,7 @@ function workspaceHostOrder(snapshot, sessions, view, enabled, pinOptions = {}) 
     if (groups.at(-1)?.priority !== priority) groups.push({priority, ids: []});
     groups.at(-1).ids.push(workspace.workspaceId);
   }
-  const key = JSON.stringify([dynamic, pinOptions.pinning, view?.groupBy, dynamic ? view?.archivedFilter : null,
+  const key = JSON.stringify([dynamic, pinOptions.pinning, view?.groupBy,
     groups.map(group => [group.priority === Infinity, group.ids.sort()])]);
   return {key, ids: ranked.map(row => row.workspace.workspaceId)};
 }
@@ -929,8 +928,8 @@ return {
       const orderBy = props.useStore(state => state.orderBy);
       const archivedFilter = props.useStore(state => state.archivedFilter ?? 'default');
       const projected = React.useMemo(() => orderRecentWorkspaces(snapshot, {byId},
-        {groupBy, orderBy, archivedFilter}, active, {pinning, pinnedWorkspaceIds, onlyPinned}),
-        [snapshot, byId, groupBy, orderBy, archivedFilter, active, pinning, pinnedWorkspaceIds, onlyPinned]);
+        {groupBy, orderBy}, active, {pinning, pinnedWorkspaceIds, onlyPinned}),
+        [snapshot, byId, groupBy, orderBy, active, pinning, pinnedWorkspaceIds, onlyPinned]);
       const filtering = onlyPinned && groupBy === 'workspace';
       const sessionSnapshot = props.useSessions(identity);
       const {writable, status: preferencesStatus} = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
@@ -939,9 +938,9 @@ return {
       const writer = React.useRef(null);
       const readMove = React.useRef(null);
       const syncKey = React.useMemo(() => canSync && writable && ['saved', 'error'].includes(preferencesStatus)
-        ? workspaceHostOrder(snapshot, sessionSnapshot, {groupBy, orderBy, archivedFilter}, active,
+        ? workspaceHostOrder(snapshot, sessionSnapshot, {groupBy, orderBy}, active,
           {pinning, pinnedWorkspaceIds})?.key ?? null : null,
-      [canSync, writable, preferencesStatus, snapshot, sessionSnapshot, groupBy, orderBy, archivedFilter, active, pinning, pinnedWorkspaceIds]);
+      [canSync, writable, preferencesStatus, snapshot, sessionSnapshot, groupBy, orderBy, active, pinning, pinnedWorkspaceIds]);
       React.useEffect(() => {
         if (!canSync) return;
         let lastError = -Infinity;
@@ -964,13 +963,13 @@ return {
           if (!live || !['saved', 'error'].includes(confirmed.status) || !confirmed.writable) return null;
           const prefs = confirmed.preferences.workspace;
           const current = workspaces.list.getSnapshot();
-          const plan = workspaceHostOrder(current, sessionSnapshot, {groupBy, orderBy, archivedFilter},
+          const plan = workspaceHostOrder(current, sessionSnapshot, {groupBy, orderBy},
             active && prefs?.dynamicSort !== false, {pinning: pinning && prefs?.pinning !== false,
               pinnedWorkspaceIds: prefs?.pinnedWorkspaceIds || EMPTY_WORKSPACE_PINS});
           return plan?.key === key ? nextWorkspaceMove(current.items, plan.ids) : null;
         };
         writer.current?.update(syncKey);
-      }, [workspaces, syncKey, sessionSnapshot, groupBy, orderBy, archivedFilter, active, pinning, pinnedWorkspaceIds]);
+      }, [workspaces, syncKey, sessionSnapshot, groupBy, orderBy, active, pinning, pinnedWorkspaceIds]);
       const statuses = typeof props.useSessionStatus === 'function' ? props.useSessionStatus(identity) : null;
       const activityByWorkspace = React.useMemo(() => new Map(activeIndicator ? snapshot.items.map(workspace =>
         [workspace.workspaceId, workspaceActivity(workspace, sessionSnapshot, statuses, snapshot.archivedSessionIds, archivedFilter)]) : []),

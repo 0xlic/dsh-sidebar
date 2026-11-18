@@ -5,8 +5,8 @@ function rankWorkspaces(snapshot, sessions, view, enabled, pinOptions) {
   const onlyPinned = pinOptions.onlyPinned === true && view?.groupBy === 'workspace';
   const visiblePins = new Set(pinOptions.pinnedWorkspaceIds || []);
   if ((!dynamic && pinned.size === 0 && !onlyPinned) || !Array.isArray(snapshot?.items)) return null;
-  const archived = new Set(snapshot.archivedSessionIds || []);
-  const filter = view?.archivedFilter || 'default';
+  // Archival changes visibility, not activity. Keep archived members in the
+  // ranking so hiding the newest session does not move its workspace.
   const items = onlyPinned ? snapshot.items.filter(workspace => visiblePins.has(workspace.workspaceId)) : snapshot.items;
   const ranked = items.map((workspace, index) => {
     let updatedAt = -Infinity;
@@ -14,7 +14,6 @@ function rankWorkspaces(snapshot, sessions, view, enabled, pinOptions) {
       const session = sessions?.byId?.[id];
       if (!session || session.origin === 'subagent') continue;
       if (session.blank && !(session.retainedBy?.mainView > 0)) continue;
-      if (filter === 'only' ? !archived.has(id) : filter !== 'show' && archived.has(id)) continue;
       if (typeof session.updatedAt === 'number' && Number.isFinite(session.updatedAt)) updatedAt = Math.max(updatedAt, session.updatedAt);
     }
     return {workspace, index, updatedAt};
@@ -49,7 +48,7 @@ export function workspaceHostOrder(snapshot, sessions, view, enabled, pinOptions
     if (groups.at(-1)?.priority !== priority) groups.push({priority, ids: []});
     groups.at(-1).ids.push(workspace.workspaceId);
   }
-  const key = JSON.stringify([dynamic, pinOptions.pinning, view?.groupBy, dynamic ? view?.archivedFilter : null,
+  const key = JSON.stringify([dynamic, pinOptions.pinning, view?.groupBy,
     groups.map(group => [group.priority === Infinity, group.ids.sort()])]);
   return {key, ids: ranked.map(row => row.workspace.workspaceId)};
 }

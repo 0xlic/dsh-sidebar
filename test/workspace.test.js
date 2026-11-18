@@ -148,12 +148,8 @@ test('ties, empty workspaces and unknown or invalid timestamps keep native relat
   for(const byId of [{}, {a1:{updatedAt:30},b1:{updatedAt:30}}, {a1:{updatedAt:NaN},b1:{updatedAt:'999'}}])
     assert.equal(orderRecentWorkspaces(snapshot,{byId},view,true),snapshot);
 });
-test('ranking follows native archive visibility and ignores subagents and hidden blanks', () => {
-  const data = {...snapshot, archivedSessionIds:['a1']};
+test('ranking ignores subagents and hidden blanks', () => {
   const sessions = {byId:{a1:{updatedAt:100},a2:{updatedAt:20},b1:{updatedAt:30}}};
-  assert.deepEqual(ids(orderRecentWorkspaces(data,sessions,view,true)), ['b','a','empty']);
-  assert.equal(orderRecentWorkspaces(data,sessions,{...view,archivedFilter:'show'},true),data);
-  assert.equal(orderRecentWorkspaces(data,sessions,{...view,archivedFilter:'only'},true),data);
   for (const extra of [{origin:'subagent'}, {blank:true}]) {
     assert.deepEqual(ids(orderRecentWorkspaces(snapshot,{byId:{...sessions.byId,a1:{updatedAt:100,...extra}}},view,true)),['b','a','empty']);
   }
@@ -162,6 +158,33 @@ test('ranking follows native archive visibility and ignores subagents and hidden
 
 const native = {...snapshot, state: 'idle'};
 const catalog = {...list, phase: 'ready'};
+
+test('consecutive archives, unarchive, and archive filters leave display order and Host sync key unchanged', () => {
+  const before = workspaceHostOrder(native, catalog, view, true);
+  assert.deepEqual(before.ids, ['b', 'a', 'empty']);
+  for (const archivedSessionIds of [['b1'], ['b1', 'a2'], ['b1', 'a2', 'a1'], ['a2', 'a1'], []]) {
+    const current = {...native, archivedSessionIds};
+    for (const archivedFilter of ['default', 'show', 'only']) {
+      const currentView = {...view, archivedFilter};
+      assert.deepEqual(ids(orderRecentWorkspaces(current, catalog, currentView, true)), before.ids);
+      assert.deepEqual(workspaceHostOrder(current, catalog, currentView, true), before);
+    }
+  }
+});
+
+test('new or updated sessions still reorder the workspaces after archival', () => {
+  const current = {...native, archivedSessionIds: ['b1']};
+  const before = workspaceHostOrder(current, catalog, view, true);
+  const updated = {...catalog, byId: {...catalog.byId, a2: {updatedAt: 40}}};
+  const withNew = {...current, items: current.items.map(row => row.workspaceId === 'empty' ? {...row, sessionIds: ['new']} : row)};
+  const newCatalog = {...catalog, byId: {...catalog.byId, new: {updatedAt: 50}}};
+  for (const [snapshot, sessions, expected] of [[current, updated, ['a', 'b', 'empty']], [withNew, newCatalog, ['empty', 'b', 'a']]]) {
+    const plan = workspaceHostOrder(snapshot, sessions, view, true);
+    assert.deepEqual(plan.ids, expected);
+    assert.deepEqual(ids(orderRecentWorkspaces(snapshot, sessions, view, true)), expected);
+    assert.notEqual(plan.key, before.key);
+  }
+});
 
 test('Host sync ranks the full registry: pins first, then recency, regardless of only-pinned display', () => {
   const pins = {pinning: true, pinnedWorkspaceIds: ['empty'], onlyPinned: true};
