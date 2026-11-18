@@ -2,6 +2,7 @@ import z from '@deepseek-ai/schemastery';
 
 const group = () => z.object({
   order: z.array(z.string()).default([]),
+  hidden: z.array(z.string()).default([]),
   names: z.dict(z.string()).default({}),
 });
 

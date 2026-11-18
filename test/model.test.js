@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {normalize, arrange, move, reorder, rename, OWN_ID, replaceComponent} from '../src/model.js';
+import {normalize, arrange, navigationRows, setVisible, move, reorder, rename, OWN_ID, replaceComponent,
+  MORE_ID, WORKSPACE_ID, isBoundary, footerId, sidebarRows, splitSidebar} from '../src/model.js';
 
 test('navigation adapter preserves child ownership, injection and store', () => {
   const original = () => {}, replacement = () => {};
@@ -22,9 +23,9 @@ test('adapter cleanup does not overwrite a newer component', () => {
   assert.equal(entry.component, later);
 });
 const rows = [{id:'a',order:0},{id:'b',order:10},{id:'c',order:20},{id:OWN_ID,order:50}];
-test('normalization rejects malformed data and discards legacy hidden preferences', () => {
+test('normalization rejects malformed data and honors valid legacy hidden preferences', () => {
   const state = normalize({settings:{order:['a','a',null],hidden:[OWN_ID,'a','a',42]}});
-  assert.deepEqual(state.settings,{order:['a']});
+  assert.deepEqual(state.settings,{order:['a'],hidden:['a']});
   for (const value of [null, undefined, [], 42, {sidebar: {order: 'a', names: []}}]) {
     assert.deepEqual(normalize(value), {sidebar:{order:[]},settings:{order:[]}});
   }
@@ -108,19 +109,56 @@ test('rename, move and reorder preserve workspace settings without mutating thei
     assert.deepEqual(state, before);
   }
 });
+test('visibility is immutable, group-local, deduplicated and protects recovery identities', () => {
+  const raw = {sidebar: {order: ['b', 'a'], hidden: ['a', 'a', OWN_ID, MORE_ID, WORKSPACE_ID,
+    footerId('settings'), 'dsh-sidebar:footer:old', '', '  ', 42], names: {a: 'Alpha'}},
+    settings: {hidden: ['b']}, workspace: {dynamicSort: false, pinnedWorkspaceIds: ['workspace']}};
+  const state = normalize(raw), before = structuredClone(state);
+  assert.deepEqual(state.sidebar.hidden, ['a', footerId('settings')]);
+  assert.deepEqual(normalize(JSON.parse(JSON.stringify(state))), state);
+  for (const group of ['sidebar', 'settings']) {
+    const hidden = setVisible(state, group, 'unloaded', false);
+    assert.equal(hidden[group].hidden.includes('unloaded'), true);
+    assert.deepEqual(setVisible(hidden, group, 'unloaded', false), hidden);
+    assert.deepEqual(setVisible(hidden, group, 'unloaded', true), state);
+    assert.deepEqual(hidden.workspace, state.workspace);
+    assert.deepEqual(hidden[group].order, state[group].order);
+    assert.deepEqual(hidden[group].names, state[group].names);
+    for (const id of [OWN_ID, MORE_ID, WORKSPACE_ID, '', ' ', null, 1, {}, 'dsh-sidebar:footer:old']) {
+      assert.deepEqual(setVisible(state, group, id, false), state);
+    }
+  }
+  for (const group of [undefined, null, 'unknown', '__proto__']) assert.deepEqual(setVisible(state, group, 'a', false), state);
+  for (const value of [undefined, null, 0, 1, 'false']) assert.deepEqual(setVisible(state, 'sidebar', 'a', value), state);
+  assert.deepEqual(setVisible(normalize({settings: {hidden: ['a']}}), 'settings', 'a', true).settings, {order: []});
+  assert.deepEqual(state, before);
+});
+test('navigation filters hidden rows after ordering and renaming without altering metadata or catalogs', () => {
+  const action = () => {};
+  const native = [{id: 'a', label: 'A'}, {id: 'b', label: 'B', action}, {id: OWN_ID}, {id: MORE_ID}, {id: WORKSPACE_ID}];
+  const preference = {order: ['b', 'a'], hidden: ['a', OWN_ID, MORE_ID, WORKSPACE_ID], names: {b: 'Bee'}};
+  const before = structuredClone(preference);
+  const result = navigationRows(native, preference);
+  assert.deepEqual(result.map(row => row.id), ['b', OWN_ID, MORE_ID, WORKSPACE_ID]);
+  assert.equal(result[0].label, 'Bee');
+  assert.equal(result[0].action, action);
+  assert.equal(arrange(native, preference).length, native.length);
+  assert.deepEqual(preference, before);
+});
 test('default preserves original order', () => {
   assert.deepEqual(arrange(rows,normalize(null).sidebar),rows);
 });
 test('custom order appends new plugins', () => {
   assert.deepEqual(arrange(rows,{order:['c','a']}).map(x=>x.id),['c','a','b',OWN_ID]);
 });
-test('legacy hidden data cannot hide any actual row, including the manager', () => {
+test('management catalog retains hidden rows, while navigation protects the manager', () => {
   assert.deepEqual(arrange(rows,{order:[],hidden:['a',OWN_ID]}),rows);
+  assert.deepEqual(navigationRows(rows,{order:[],hidden:['a',OWN_ID]}), rows.slice(1));
 });
-test('move preserves all rows, names and absent identities while dropping hidden data', () => {
+test('move preserves all rows, names, absent identities and hidden data', () => {
   let state=normalize({sidebar:{order:['a','b','c',OWN_ID,'absent'],hidden:['b'],names:{b:'Bee',absent:'Unloaded'}}});
   state=move(state,'sidebar',rows,'c',-1);
-  assert.deepEqual(state.sidebar,{order:['a','c','b',OWN_ID,'absent'],names:{b:'Bee',absent:'Unloaded'}});
+  assert.deepEqual(state.sidebar,{order:['a','c','b',OWN_ID,'absent'],hidden:['b'],names:{b:'Bee',absent:'Unloaded'}});
 });
 test('boundary and missing-row movement are harmless and leave input immutable', () => {
   const state=normalize(null), before=structuredClone(state);
@@ -186,4 +224,107 @@ test('reorder self, adjacent positions, missing or unloaded IDs and invalid grou
 });
 test('reset restores all builtin navigation', () => {
   assert.deepEqual(arrange(rows,normalize(null).settings),rows);
+});
+
+const ids = rows => rows.map(row => row.id);
+const footer = {id: footerId('settings'), kind: 'footer', label: 'Settings', order: -100};
+const sidebarMenus = [{id: 'a', label: 'A', order: 0}, {id: 'b', label: 'B', order: 10}, footer];
+test('sidebar defaults to panels, More, workspaces, then footer actions without folding footer', () => {
+  const before = structuredClone(sidebarMenus);
+  const live = sidebarRows(sidebarMenus, 'More translated', 'Workspaces translated');
+  assert.deepEqual(ids(live), ['a', 'b', MORE_ID, WORKSPACE_ID, footer.id]);
+  assert.equal(live[2].label, 'More translated');
+  assert.equal(live[3].label, 'Workspaces translated');
+  assert.deepEqual(ids(arrange(live, {order: []})), ids(live));
+  const result = splitSidebar(sidebarMenus, {order: []});
+  assert.deepEqual(ids(result.visible), ['a', 'b', footer.id]);
+  assert.deepEqual(result.folded, []);
+  assert.deepEqual(ids(result.top), ['a', 'b']);
+  assert.deepEqual(ids(result.bottom), [footer.id]);
+  assert.equal(result.moreLocation, 'top');
+  assert.deepEqual(sidebarMenus, before);
+});
+test('legacy More order folds trailing panels but leaves new workspace and footer below them', () => {
+  const result = splitSidebar(sidebarMenus, {order: ['a', MORE_ID, 'b']});
+  assert.deepEqual(ids(result.ordered), ['a', MORE_ID, 'b', WORKSPACE_ID, footer.id]);
+  assert.deepEqual(ids(result.visible), ['a', footer.id]);
+  assert.deepEqual(ids(result.folded), ['b']);
+  assert.deepEqual(ids(result.top), ['a']);
+  assert.deepEqual(ids(result.bottom), [footer.id]);
+});
+test('menus can cross either divider and footer actions fold only when explicitly moved inside More', () => {
+  const live = sidebarRows(sidebarMenus);
+  let state = normalize(null);
+  state = reorder(state, 'sidebar', live, 'b', WORKSPACE_ID, true);
+  let result = splitSidebar(sidebarMenus, state.sidebar);
+  assert.deepEqual(ids(result.top), ['a']);
+  assert.deepEqual(ids(result.bottom), ['b', footer.id]);
+  assert.deepEqual(result.folded, []);
+  state = reorder(state, 'sidebar', live, footer.id, WORKSPACE_ID);
+  result = splitSidebar(sidebarMenus, state.sidebar);
+  assert.deepEqual(ids(result.folded), [footer.id]);
+  assert.deepEqual(ids(result.visible), ['a', 'b']);
+  state = reorder(state, 'sidebar', live, 'b', MORE_ID, true);
+  result = splitSidebar(sidebarMenus, state.sidebar);
+  assert.deepEqual(ids(result.folded), ['b', footer.id]);
+  state = reorder(state, 'sidebar', live, 'b', MORE_ID);
+  assert.deepEqual(ids(splitSidebar(sidebarMenus, state.sidebar).top), ['a', 'b']);
+});
+test('More below workspace leaves earlier bottom menus visible and folds only later menus', () => {
+  const result = splitSidebar(sidebarMenus, {order: ['a', WORKSPACE_ID, 'b', MORE_ID, footer.id]});
+  assert.deepEqual(ids(result.top), ['a']);
+  assert.deepEqual(ids(result.bottom), ['b']);
+  assert.deepEqual(ids(result.visible), ['a', 'b']);
+  assert.deepEqual(ids(result.folded), [footer.id]);
+  assert.equal(result.moreLocation, 'bottom');
+  assert.equal(result.moreIndex, 3);
+  assert.equal(result.workspaceIndex, 1);
+});
+test('adjacent, first and last boundaries never fold workspaces or expose sentinels as menus', () => {
+  for (const [order, visible, folded, top, bottom] of [
+    [[MORE_ID, WORKSPACE_ID, 'a', 'b', footer.id], ['a', 'b', footer.id], [], [], ['a', 'b', footer.id]],
+    [[WORKSPACE_ID, MORE_ID, 'a', 'b', footer.id], [], ['a', 'b', footer.id], [], []],
+    [[MORE_ID, 'a', 'b', footer.id, WORKSPACE_ID], [], ['a', 'b', footer.id], [], []],
+    [['a', WORKSPACE_ID, 'b', footer.id, MORE_ID], ['a', 'b', footer.id], [], ['a'], ['b', footer.id]],
+  ]) {
+    const result = splitSidebar(sidebarMenus, {order});
+    assert.deepEqual(ids(result.visible), visible);
+    assert.deepEqual(ids(result.folded), folded);
+    assert.deepEqual(ids(result.top), top);
+    assert.deepEqual(ids(result.bottom), bottom);
+    assert.equal(result.ordered.filter(row => row.id === WORKSPACE_ID).length, 1);
+  }
+  const empty = splitSidebar([], {order: [WORKSPACE_ID, MORE_ID]});
+  assert.deepEqual(empty.visible, []);
+  assert.deepEqual(empty.folded, []);
+  assert.deepEqual(empty.top, []);
+  assert.deepEqual(empty.bottom, []);
+});
+test('sidebarRows replaces existing boundaries once and preserves multiple footer action order', () => {
+  const second = {id: footerId('other'), kind: 'footer', order: -200};
+  const live = sidebarRows([footer, {id: MORE_ID}, {id: 'a'}, {id: WORKSPACE_ID}, second, {id: MORE_ID}]);
+  assert.deepEqual(ids(arrange(live, {order: []})), ['a', MORE_ID, WORKSPACE_ID, footer.id, second.id]);
+  assert.equal(live.find(row => row.id === MORE_ID).label, 'More');
+  assert.equal(live.find(row => row.id === WORKSPACE_ID).label, 'Workspaces');
+});
+test('both boundaries are reserved, movable sidebar-only identities; old footer preferences remain ignored', () => {
+  const oldFooter = 'dsh-sidebar:footer:settings';
+  assert.equal(footer.id, 'dsh-sidebar:action:settings');
+  for (const id of [MORE_ID, WORKSPACE_ID]) assert.equal(isBoundary(id), true);
+  for (const id of [undefined, null, 'a', footer.id, oldFooter]) assert.equal(isBoundary(id), false);
+  const raw = {order: [MORE_ID, WORKSPACE_ID, footer.id, oldFooter, 'a', MORE_ID],
+    names: {[MORE_ID]: 'No', [WORKSPACE_ID]: 'No', [footer.id]: 'Options', [oldFooter]: 'Old', a: 'A'}};
+  const state = normalize({sidebar: raw, settings: raw});
+  assert.deepEqual(state.sidebar, {order: [MORE_ID, WORKSPACE_ID, footer.id, 'a'], names: {[footer.id]: 'Options', a: 'A'}});
+  assert.deepEqual(state.settings, {order: [footer.id, 'a'], names: {[footer.id]: 'Options', a: 'A'}});
+  for (const id of [MORE_ID, WORKSPACE_ID, oldFooter]) {
+    assert.deepEqual(rename(state, 'sidebar', id, 'Changed'), state);
+  }
+  const live = sidebarRows(sidebarMenus);
+  const arranged = arrange(live, raw);
+  assert.equal(arranged.find(row => row.id === MORE_ID).label, 'More');
+  assert.equal(arranged.find(row => row.id === WORKSPACE_ID).label, 'Workspaces');
+  const moved = reorder(normalize(null), 'sidebar', live, WORKSPACE_ID, MORE_ID);
+  assert.deepEqual(ids(splitSidebar(sidebarMenus, moved.sidebar).folded), [footer.id]);
+  assert.deepEqual(normalize(moved), moved);
 });

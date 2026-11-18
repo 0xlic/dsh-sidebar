@@ -2,24 +2,70 @@ export const OWN_ID = 'dsh-sidebar';
 export const GROUPS = ['sidebar', 'settings'];
 
 export const MORE_ID = 'dsh-sidebar:more';
-// Footer projections were removed; More is a persisted ordering boundary.
+export const WORKSPACE_ID = 'dsh-sidebar:workspaces';
+export function isBoundary(id) {
+  return id === MORE_ID || id === WORKSPACE_ID;
+}
+export function footerId(id) {
+  return `dsh-sidebar:action:${id}`;
+}
+// Ignore obsolete footer identities rather than migrating their saved positions.
 function isPreferenceId(id) {
   return typeof id === 'string' && !id.startsWith('dsh-sidebar:footer:');
 }
-export function sidebarRows(rows, label = 'More') {
-  return [...rows.filter(row => row.id !== MORE_ID), {id: MORE_ID, label, order: Infinity}];
+function canHide(id) {
+  return isPreferenceId(id) && id.trim() !== '' && !isBoundary(id) && id !== OWN_ID;
+}
+function hiddenIds(preference) {
+  return new Set((Array.isArray(preference?.hidden) ? preference.hidden : []).filter(canHide));
+}
+/** Visibility never affects the management catalog or protected recovery entries. */
+export function navigationRows(rows, preference) {
+  const hidden = hiddenIds(preference);
+  return arrange(rows, preference).filter(row => !hidden.has(row.id));
+}
+export function setVisible(preferences, group, id, visible) {
+  const next = normalize(preferences);
+  if (!GROUPS.includes(group) || !canHide(id) || typeof visible !== 'boolean') return next;
+  const hidden = hiddenIds(next[group]);
+  if (visible) hidden.delete(id);
+  else hidden.add(id);
+  if (hidden.size) next[group].hidden = [...hidden];
+  else delete next[group].hidden;
+  return next;
+}
+export function sidebarRows(rows, label = 'More', workspaceLabel = 'Workspaces') {
+  const menus = rows.filter(row => !isBoundary(row.id));
+  return [
+    ...menus.filter(row => row.kind !== 'footer'),
+    {id: MORE_ID, label, order: Infinity},
+    {id: WORKSPACE_ID, label: workspaceLabel, order: Infinity},
+    ...menus.filter(row => row.kind === 'footer').map(row => ({...row, order: Infinity})),
+  ];
 }
 export function splitSidebar(rows, preference) {
   const ordered = arrange(sidebarRows(rows), preference);
-  const boundary = ordered.findIndex(row => row.id === MORE_ID);
-  return {visible: ordered.slice(0, boundary), folded: ordered.slice(boundary + 1)};
+  const moreIndex = ordered.findIndex(row => row.id === MORE_ID);
+  const workspaceIndex = ordered.findIndex(row => row.id === WORKSPACE_ID);
+  const visible = [], folded = [], top = [], bottom = [];
+  const hidden = hiddenIds(preference);
+  ordered.forEach((row, index) => {
+    if (isBoundary(row.id) || hidden.has(row.id)) return;
+    if (index > moreIndex && (moreIndex > workspaceIndex || index < workspaceIndex)) folded.push(row);
+    else {
+      visible.push(row);
+      (index < workspaceIndex ? top : bottom).push(row);
+    }
+  });
+  return {visible, folded, top, bottom, ordered, moreIndex, workspaceIndex,
+    moreLocation: moreIndex < workspaceIndex ? 'top' : 'bottom'};
 }
 export function menuLabel(row, preference) {
-  return preference?.names && Object.hasOwn(preference.names, row.id) ? preference.names[row.id] : row.label;
+  return !isBoundary(row.id) && preference?.names && Object.hasOwn(preference.names, row.id) ? preference.names[row.id] : row.label;
 }
 export function rename(preferences, group, id, label) {
   const next = normalize(preferences);
-  if (!isPreferenceId(id) || id === MORE_ID) return next;
+  if (!isPreferenceId(id) || isBoundary(id)) return next;
   const name = typeof label === 'string' ? label.trim().slice(0, 80) : '';
   const names = {...next[group].names};
   if (name) Object.defineProperty(names, id, {value: name, enumerable: true, configurable: true, writable: true});
@@ -42,10 +88,12 @@ export function normalize(value) {
   for (const group of GROUPS) {
     const raw = value?.[group];
     const names = Object.fromEntries(Object.entries(raw?.names && typeof raw.names === 'object' && !Array.isArray(raw.names) ? raw.names : {})
-      .filter(([id, name]) => isPreferenceId(id) && id !== MORE_ID && typeof name === 'string' && name.trim())
+      .filter(([id, name]) => isPreferenceId(id) && !isBoundary(id) && typeof name === 'string' && name.trim())
       .map(([id, name]) => [id, name.trim().slice(0, 80)]));
+    const hidden = [...hiddenIds(raw)];
     out[group] = {
-      order: [...new Set((Array.isArray(raw?.order) ? raw.order : []).filter(id => isPreferenceId(id) && (group === 'sidebar' || id !== MORE_ID)))],
+      ...(hidden.length ? {hidden} : {}),
+      order: [...new Set((Array.isArray(raw?.order) ? raw.order : []).filter(id => isPreferenceId(id) && (group === 'sidebar' || !isBoundary(id))))],
       ...(Object.keys(names).length ? {names} : {}),
     };
   }

@@ -4,11 +4,16 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {normalize} from '../src/model.js';
 import {WORKSPACE_COLLAPSE_ALL_CSS} from '../src/workspace.js';
+import {MORE_MENU_CSS, projectMenuTrigger} from '../src/sidebar.js';
 
 const panel = {id: 'plugins', label: 'Plugins', order: 10};
 const action = {id: 'mobile-gateway-devices', label: '移动设备', order: 80};
+const footerId = 'dsh-sidebar:action:mobile-gateway-devices';
+const WORKSPACE_ID = 'dsh-sidebar:workspaces';
+const MORE_ID = 'dsh-sidebar:more';
 // Element/store doubles test the adapter contract, not visual rendering.
 const React = {
+  Fragment: Symbol.for('react.fragment'),
   createElement(type, props, ...children) {
     return {type, key: props?.key ?? null, props: {...props, ...(children.length ? {children: children.length === 1 ? children[0] : children} : {})}};
   },
@@ -49,6 +54,7 @@ function runtime(preferences = normalize(null), storage = {getItem: () => null, 
   const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8');
   const h = React.createElement, cleanups = [], subscribers = new Map();
   let injected;
+  const versions = new Map();
   function Shell(props) { return h('NativeShell', props); }
   function Settings(props) { return h('NativeSettings', props); }
   const shell = {component: Shell, options: {id: 'sidebar'}, children: {native: true}, store: {native: true}};
@@ -57,7 +63,11 @@ function runtime(preferences = normalize(null), storage = {getItem: () => null, 
   const browser = {component: Browser, options: {}, children: {native: true}, store: {native: true}};
   const nativeIcon = {component() {}, options: {id: panel.id}};
   const nativeMore = {component() {}, options: {id: 'native-more'}};
-  const nativeFooter = {component() {}, options: action};
+  function NativeFooter(props) {
+    return h('button', {...props, title: action.label, 'aria-label': action.label},
+      h('NativeActionIcon'), action.label, h('span', null, action.label + ' details'));
+  }
+  const nativeFooter = {component: NativeFooter, options: action};
   const slots = new Map([
     ['sidebar', [shell]], ['sidebar.settings', [settings]], ['sidebar.workspaces', [browser]],
     ['sidebar.panellist', [{options: panel}]],
@@ -89,11 +99,14 @@ function runtime(preferences = normalize(null), storage = {getItem: () => null, 
       menuContributions.push(contribution);
       return () => { menuContributions.splice(menuContributions.indexOf(contribution), 1); };
     }},
-    configForms: {get(id) { assert.equal(id, 'dsh-sidebar'); return form; }},
+    configForms: {
+      get(id) { assert.equal(id, 'dsh-sidebar'); return form; },
+      describe() { return {async load() {}, getSnapshot: () => ({status: 'ready'})}; },
+    },
     effect(fn) { const off = fn(); if (off) cleanups.push(off); },
     locale: new TestLocaleRuntime(),
     slots: {
-      entriesOfSlot: name => slots.get(name) || [], getVersion: () => 0,
+      entriesOfSlot: name => slots.get(name) || [], getVersion: name => versions.get(name) || 0,
       subscribe(name, fn) { const set = subscribers.get(name) || new Set(); set.add(fn); subscribers.set(name, set); return () => set.delete(fn); },
       inject(_, fn) { fn(); },
       register(options, component) { const rows = slots.get(options.name) || []; rows.push({options, component}); slots.set(options.name, rows); },
@@ -133,7 +146,11 @@ function runtime(preferences = normalize(null), storage = {getItem: () => null, 
       return slots.get('settings.section').find(entry => entry.options.id === 'dsh-sidebar').component({...props, ...owner});
     } finally { React.useState = original; React.useRef = originalRef; }
   };
-  return {shell, Shell, settings, Settings, browser, Browser, slots, props, cleanups, form, nativeIcon, nativeMore, nativeFooter, page, iconCalls, slotCalls, nativeFallbacks, writes, menuContributions, menuActive, notifications, locale: ctx.locale};
+  const publishSlot = (name, entries) => {
+    slots.set(name, entries); versions.set(name, (versions.get(name) || 0) + 1);
+    for (const fn of subscribers.get(name) || []) fn();
+  };
+  return {publishSlot, subscribers, NativeFooter, shell, Shell, settings, Settings, browser, Browser, slots, props, cleanups, form, nativeIcon, nativeMore, nativeFooter, page, iconCalls, slotCalls, nativeFallbacks, writes, menuContributions, menuActive, notifications, locale: ctx.locale};
 }
 
 function findElement(tree, predicate) {
@@ -143,7 +160,7 @@ function findElement(tree, predicate) {
 }
 
 test('built adapter preserves native icons, IDs and navigation with a persistent More boundary', () => {
-  const env = runtime({sidebar: {order: ['files', 'plugins'], hidden: ['plugins'], names: {plugins: '扩展'}}});
+  const env = runtime({sidebar: {order: ['files', 'plugins'], names: {plugins: '扩展'}}});
   const projected = env.shell.component(env.props);
   assert.equal(projected.props.component, env.Shell);
   for (const key of Object.keys(env.props).filter(key => key !== 'usePanels')) {
@@ -158,15 +175,20 @@ test('built adapter preserves native icons, IDs and navigation with a persistent
   assert.equal(env.shell.store.native, true);
 });
 
+// Reproduce the root shell's structural contract. The adapter, not this fixture,
+// supplies the footer seat by wrapping the root's authorized renderSlot call.
 function nativeNavigation(props) {
   const panels = props.usePanels(x => x), unpinned = props.useEntryPins(x => x);
-  return React.createElement('nav', null,
-    panels.filter(row => row.id === 'plugins' || !unpinned.includes(row.id)).map(row =>
-      React.createElement('NativePanelRow', {...row, canUnpin: row.id !== 'plugins', selectPanel: props.selectPanel})),
-    React.createElement('NativeMore', {
-      entries: panels.filter(row => row.id !== 'plugins'), onOpen: props.selectPanel, onPinnedChange: props.setPinned,
-      renderSlot: props.renderSlot,
-    }));
+  return React.createElement('aside', {'data-native-shell': true},
+    React.createElement('nav', null,
+      panels.filter(row => row.id === 'plugins' || !unpinned.includes(row.id)).map(row =>
+        React.createElement('NativePanelRow', {...row, canUnpin: row.id !== 'plugins', selectPanel: props.selectPanel})),
+      React.createElement('NativeMore', {
+        entries: panels.filter(row => row.id !== 'plugins'), onOpen: props.selectPanel, onPinnedChange: props.setPinned,
+        renderSlot: props.renderSlot,
+      })),
+    React.createElement('section', {'data-native-workspaces': true}, props.renderSlot('sidebar.workspaces', {wide: true})),
+    React.createElement('footer', null, props.renderSlot('sidebar.footer.action', {wide: true})));
 }
 function projectedNavigation(env) {
   const boundary = env.shell.component(env.props);
@@ -179,7 +201,7 @@ test('native More includes folded plugins with real IDs, native navigation and c
   const more = findElement(tree, node => node.type === 'NativeMore');
   assert.deepEqual(JSON.parse(JSON.stringify(more.props.entries)), [{id: 'plugins', label: '扩展', pinned: false, active: true}]);
   assert.equal(more.props.onOpen, env.props.selectPanel);
-  assert.equal(more.props.renderSlot, env.props.renderSlot);
+  assert.equal(typeof more.props.renderSlot, 'function');
   assert.deepEqual(env.slots.get('sidebar.panellist.actions'), [env.nativeMore]);
 });
 test('More pin moves a folded item above the persistent boundary and failure rolls back with feedback', async () => {
@@ -187,7 +209,7 @@ test('More pin moves a folded item above the persistent boundary and failure rol
   const env = runtime(preferences);
   const more = findElement(projectedNavigation(env), node => node.type === 'NativeMore');
   await more.props.onPinnedChange('plugins', true);
-  assert.deepEqual(Array.from(env.writes.at(-1).sidebar.order), ['plugins', 'dsh-sidebar:more']);
+  assert.deepEqual(Array.from(env.writes.at(-1).sidebar.order), ['plugins', MORE_ID, WORKSPACE_ID, footerId]);
   const shown = findElement(projectedNavigation(env), node => node.type === 'NativePanelRow');
   assert.equal(shown.props.id, 'plugins');
   assert.equal(shown.props.canUnpin, false);
@@ -208,7 +230,7 @@ test('More boundary has a keyboard-operable persistent grip and stays out of set
   assert.equal(rowNode(page, 'settings', 'dsh-sidebar:more'), undefined);
   gripNode(marker).props.onKeyDown({key: 'ArrowUp', preventDefault() {}});
   await Promise.resolve();
-  assert.deepEqual(Array.from(env.writes.at(-1).sidebar.order), ['dsh-sidebar:more', 'plugins']);
+  assert.deepEqual(Array.from(env.writes.at(-1).sidebar.order), [MORE_ID, 'plugins', WORKSPACE_ID, footerId]);
   assert.equal(findElement(projectedNavigation(env), node => node.type === 'NativePanelRow'), undefined);
 });
 
@@ -227,7 +249,7 @@ test('settings adapter preserves the native icon renderer and changes only order
   assert.equal(env.slots.get('settings.section.icon')[0], env.nativeIcon);
 });
 
-test('native More and footer controls are not replaced, duplicated or relocated', () => {
+test('native More and footer registrations retain original IDs without duplicate declarations', () => {
   const env = runtime();
   assert.deepEqual(env.slots.get('sidebar.panellist.actions'), [env.nativeMore]);
   assert.deepEqual(env.slots.get('sidebar.footer.action'), [env.nativeFooter]);
@@ -235,14 +257,18 @@ test('native More and footer controls are not replaced, duplicated or relocated'
   for (const group of ['sidebar', 'settings']) assert.equal(findElement(panelRegion(page, group), node => node.props?.role === 'switch'), undefined);
   assert.equal(findElement(page, node => node.props?.row?.id === 'dsh-sidebar:more'), undefined);
   assert.equal(findElement(page, node => node.props?.row?.id === action.id), undefined);
+  assert.ok(rowNode(page, 'sidebar', footerId));
+  assert.ok(rowNode(page, 'sidebar', WORKSPACE_ID));
+  assert.equal(rowNode(page, 'settings', footerId), undefined);
 });
 
 test('management page requests original panel icons through the native factory with the real ID', () => {
   const env = runtime();
   env.page();
-  assert.equal(env.iconCalls.length, 1);
-  assert.equal(env.iconCalls[0][0], 'sidebar.panel.icon');
-  assert.deepEqual({...env.iconCalls[0][1]}, {id: 'plugins', size: 18, active: false});
+  const panelCalls = env.iconCalls.filter(([name]) => name === 'sidebar.panel.icon');
+  assert.equal(panelCalls.length, 1);
+  assert.deepEqual({...panelCalls[0][1]}, {id: 'plugins', size: 18, active: false});
+  assert.equal(env.iconCalls.some(([, owner]) => owner.id === footerId || owner.id === WORKSPACE_ID), false);
   assert.equal(env.slots.get('sidebar.panellist')[0].options, panel);
 });
 
@@ -261,8 +287,19 @@ test('settings management reads registered icons and native built-in fallbacks w
     assert.equal(options.only, id);
     assert.equal(options.fallback, env.nativeFallbacks.get(id));
   }
-  assert.equal(env.slots.get('settings.section.icon').length, 1, 'no duplicate declarations or registrations');
-  assert.equal(env.slots.get('settings.section.icon')[0], env.nativeIcon);
+  const icons = env.slots.get('settings.section.icon');
+  assert.equal(icons.length, 2, 'one native icon plus the manager’s own icon');
+  assert.equal(icons[0], env.nativeIcon);
+  assert.equal(icons[1].options.id, 'dsh-sidebar');
+  for (const size of [16, 20, 24]) {
+    const svg = icons[1].component({size, active: true});
+    assert.equal(svg.type, 'svg');
+    assert.equal(svg.props.width, size);
+    assert.equal(svg.props.height, size);
+    assert.equal(svg.props.stroke, 'currentColor');
+    assert.equal(svg.props.viewBox, '0 0 16 16');
+    assert.equal(svg.props['aria-hidden'], true);
+  }
 });
 
 test('icon bridge only adds the renderer to this manager page and passes other pages through unchanged', () => {
@@ -299,6 +336,32 @@ test('cleanup restores original shells and a mounted adapter keeps its hook coun
     assert.equal(count, managedCount);
     assert.equal(fallback.props.usePanels, env.props.usePanels);
   } finally { React.useSyncExternalStore = original; }
+});
+
+test('names edit as borderless text and only renamed entries expose an accessible restore icon', async () => {
+  const env = runtime({sidebar: {names: {plugins: 'Custom'}}});
+  const field = findElement(env.page(), node => node.type?.name === 'NameField' && node.props.row.id === panel.id);
+  const originalState = React.useState;
+  React.useState = initial => [initial, () => {}];
+  try {
+    const tree = field.type(field.props), [input, reset] = tree.props.children;
+    assert.equal(input.props.spellCheck, false);
+    assert.equal(reset.props.className, 'dshsb-name-reset');
+    assert.equal(reset.props.title, 'defaultName');
+    assert.equal(reset.props['aria-label'], 'defaultName Plugins');
+    assert.equal(reset.props.children.type, 'svg');
+    assert.equal(reset.props.children.props.width, 14);
+    assert.equal(field.type({...field.props, name: panel.label}).props.children[1], null);
+    assert.equal(field.type({...field.props, writable: false}).props.children[1].props.disabled, true);
+    await reset.props.onClick();
+    assert.equal(env.writes.at(-1).sidebar.names?.plugins, undefined);
+  } finally { React.useState = originalState; }
+  const css = findElement(env.page(), node => node.type === 'style').props.children;
+  assert.match(css, /field-sizing:content/);
+  assert.match(css, /border:0!important/);
+  assert.match(css, /outline:none!important;box-shadow:none!important/);
+  assert.match(css, /dshsb-name-input:focus-visible\{text-decoration:underline dotted/);
+  assert.doesNotMatch(css, /dshsb-name-input:focus\{outline:2px/);
 });
 
 test('rename field restores a rejected draft even if optimistic updates were never rendered', async () => {
@@ -1013,4 +1076,480 @@ test('edge scrolling remains inside the scrollport and stops when canceled', () 
   const count = d.frames.size;
   frame();
   assert.equal(d.frames.size, count);
+});
+
+
+const footerSeat = tree => findElement(tree, node => node.props?.['data-dshsb-footer-seat'] === true);
+const nativeNav = tree => findElement(tree, node => node.type === 'nav');
+const footerSlots = tree => {
+  const nodes = [];
+  function visit(node) {
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'NativeSlot' && node.props.args[0] === 'sidebar.footer.action') nodes.push(node);
+    visit(node.props?.children);
+  }
+  visit(tree);
+  return nodes;
+};
+function assertOriginalFooterIds(tree, expected = [action.id], inMenu = false) {
+  const nodes = footerSlots(tree);
+  assert.deepEqual(nodes.map(node => node.props.args[2]?.only), expected);
+  for (const node of nodes) {
+    const {dshsbMenuWrap, ...owner} = node.props.args[1];
+    assert.deepEqual({...owner}, {wide: true});
+    assert.equal(typeof dshsbMenuWrap, inMenu ? 'function' : 'undefined');
+  }
+}
+
+test('default management sequence is panels, More, Workspaces, then namespaced footer action', () => {
+  const env = runtime(), region = panelRegion(env.page(), 'sidebar');
+  assert.deepEqual(Array.from(region.props.children.flat(Infinity).filter(node => node?.props?.['data-dshsb-group'] === 'sidebar'), node => node.key), ['plugins', MORE_ID, WORKSPACE_ID, footerId]);
+  const tree = projectedNavigation(env);
+  assert.ok(findElement(tree, node => node.props?.['data-native-workspaces']));
+  assert.ok(findElement(nativeNav(tree), node => node.type === 'NativePanelRow'));
+  assert.equal(footerSlots(nativeNav(tree)).length, 0);
+  assertOriginalFooterIds(footerSeat(tree));
+  assert.deepEqual({...footerSeat(tree).props.style}, {width: '100%', minWidth: 0, display: 'flex', flexDirection: 'column'});
+  assertOriginalFooterIds(tree);
+});
+
+test('dragging footer before Workspaces saves its top position and preserves native slot ownership', () => {
+  const env = runtime(), drag = pointerDrag(env, 'sidebar', footerId);
+  drag.grip.props.onPointerDown(drag.event()); drag.target(MORE_ID);
+  drag.grip.props.onPointerMove(drag.event(10, 25)); drag.grip.props.onPointerUp(drag.event(10, 25));
+  assert.deepEqual(Array.from(env.writes.at(-1).sidebar.order), ['plugins', footerId, MORE_ID, WORKSPACE_ID]);
+  const tree = projectedNavigation(env);
+  assertOriginalFooterIds(nativeNav(tree));
+  assert.equal(footerSlots(footerSeat(tree)).length, 0);
+  const reloaded = runtime(env.writes.at(-1));
+  assertOriginalFooterIds(nativeNav(projectedNavigation(reloaded)));
+});
+
+test('footer between More and Workspaces folds into More without becoming a fake native panel', () => {
+  const env = runtime(), drag = pointerDrag(env, 'sidebar', footerId);
+  drag.grip.props.onPointerDown(drag.event()); drag.target(WORKSPACE_ID);
+  drag.grip.props.onPointerMove(drag.event(10, 25)); drag.grip.props.onPointerUp(drag.event(10, 25));
+  assert.deepEqual(Array.from(env.writes.at(-1).sidebar.order), ['plugins', MORE_ID, footerId, WORKSPACE_ID]);
+  const tree = projectedNavigation(env), more = findElement(tree, node => node.type === 'NativeMore');
+  assert.equal(footerSlots(tree).length, 0, 'folded actions do not remain in the root footer');
+  assert.deepEqual(Array.from(more.props.entries, row => row.id), ['plugins']);
+  const owner = {entries: more.props.entries, onOpen: env.props.selectPanel, onDismiss() {}};
+  const menu = more.props.renderSlot('sidebar.panellist.actions', owner);
+  assertOriginalFooterIds(menu, [action.id], true);
+  const nativeCall = env.slotCalls.at(-1);
+  assert.equal(nativeCall[0], 'sidebar.panellist.actions');
+  assert.deepEqual(Array.from(nativeCall[1].entries, row => row.id), ['plugins']);
+  assert.equal(env.slots.get('sidebar.panellist').length, 1);
+  assert.equal(env.slots.get('sidebar.footer.action').length, 1);
+});
+
+test('a real panel can move below Workspaces while More follows the workspace boundary', () => {
+  const env = runtime(), drag = pointerDrag(env, 'sidebar', 'plugins');
+  drag.grip.props.onPointerDown(drag.event()); drag.target(footerId);
+  drag.grip.props.onPointerMove(drag.event(10, 55)); drag.grip.props.onPointerUp(drag.event(10, 55));
+  assert.deepEqual(Array.from(env.writes.at(-1).sidebar.order), [MORE_ID, WORKSPACE_ID, footerId, 'plugins']);
+  let tree = projectedNavigation(env);
+  assert.equal(findElement(nativeNav(tree), node => node.type === 'NativePanelRow'), undefined);
+  assert.equal(findElement(footerSeat(tree), node => node.type === 'NativePanelRow').props.id, 'plugins');
+  assert.ok(findElement(nativeNav(tree), node => node.type === 'NativeMore'));
+  gripNode(rowNode(env.page(), 'sidebar', MORE_ID)).props.onKeyDown({key: 'ArrowDown', preventDefault() {}});
+  assert.deepEqual(Array.from(env.writes.at(-1).sidebar.order), [WORKSPACE_ID, MORE_ID, footerId, 'plugins']);
+  tree = projectedNavigation(env);
+  assert.equal(findElement(nativeNav(tree), node => node.type === 'NativeMore'), undefined);
+  const more = findElement(footerSeat(tree), node => node.type === 'NativeMore');
+  assert.deepEqual(Array.from(more.props.entries, row => row.id), ['plugins']);
+  assert.equal(more.props.entries[0].pinned, false);
+  assert.equal(findElement(footerSeat(tree), node => node.type === 'NativePanelRow'), undefined);
+});
+
+test('native footer ActionAdapter replaces only exact labels and restores callbacks and component on disposal', () => {
+  const env = runtime({sidebar: {names: {[footerId]: 'Devices renamed'}}});
+  const click = () => {}, pointer = () => {}, owner = {onClick: click, onPointerDown: pointer, disabled: true};
+  const adapted = env.nativeFooter.component;
+  const tree = adapted(owner);
+  assert.equal(tree.props.title, 'Devices renamed');
+  assert.equal(tree.props['aria-label'], 'Devices renamed');
+  assert.equal(tree.props.children[1], 'Devices renamed');
+  assert.equal(tree.props.children[2].props.children, action.label + ' details');
+  assert.equal(tree.props.children[0].type, 'NativeActionIcon');
+  assert.equal(tree.props.onClick, click); assert.equal(tree.props.onPointerDown, pointer);
+  assert.equal(tree.props.disabled, true);
+  for (const off of env.cleanups.reverse()) off();
+  assert.equal(env.nativeFooter.component, env.NativeFooter);
+  assert.equal(adapted(owner).props.children[1], action.label, 'mounted adapter falls back to original label');
+  assert.equal(env.nativeFooter.component(owner).props.onClick, click);
+});
+
+// Resolve only the adapter's deferred function boundary, not arbitrary children.
+function renderActionOutput(node) {
+  while (React.isValidElement(node) && typeof node.type === 'function') node = node.type(node.props);
+  return node;
+}
+
+test('wrapped mobile footer renames its rendered launcher and overrides inline More geometry', () => {
+  const env = runtime({sidebar: {names: {[footerId]: '我的手机'}}});
+  const h = React.createElement, click = () => {}, pointer = () => {};
+  let renders = 0;
+  const icon = h('svg', {width: 20, height: 20, viewBox: '0 0 882 832', fill: 'currentColor'}, h('path', {d: 'M0 0'}));
+  const dialog = h('section', {role: 'dialog'}, h('button', {title: action.label}, action.label));
+  function FooterButton(props) {
+    React.useSyncExternalStore(env.locale.subscribe.bind(env.locale), env.locale.getSnapshot.bind(env.locale));
+    renders++;
+    return h(React.Fragment, null,
+      h('button', {...props, title: action.label, 'aria-label': action.label, 'aria-pressed': true,
+        style: {height: 42, width: 'calc(100% + 4px)', margin: '4px -2px', padding: '0 10px 0 8px', gap: 8, background: 'transparent'}},
+        icon, h('span', null, action.label)), dialog);
+  }
+  const registration = props => h(FooterButton, props);
+  const entry = {options: action, component: registration};
+  env.publishSlot('sidebar.footer.action', [entry]);
+  let wrapped = 0;
+  const props = {wide: true, onClick: click, onPointerDown: pointer, disabled: true,
+    dshsbMenuWrap: tree => { wrapped++; return projectMenuTrigger(React, tree); }};
+  const deferred = entry.component(props);
+  assert.equal(renders, 0, 'nested Hooks must not run eagerly in the slot adapter');
+  const tree = renderActionOutput(deferred);
+  const button = findElement(tree, n => n.type === 'button');
+  assert.equal(renders, 1); assert.equal(wrapped, 1);
+  assert.equal(button.props.title, '我的手机'); assert.equal(button.props['aria-label'], '我的手机');
+  assert.equal(button.props.children[1].props.children, '我的手机');
+  assert.equal(button.props.onClick, click); assert.equal(button.props.onPointerDown, pointer);
+  assert.equal(button.props.disabled, true); assert.equal(button.props['aria-pressed'], true);
+  assert.equal(button.props.dshsbMenuWrap, undefined);
+  assert.equal(button.props.role, 'menuitem');
+  assert.equal(button.props.style.height, 'auto'); assert.equal(button.props.style.minHeight, 32);
+  assert.equal(button.props.style.width, '100%'); assert.equal(button.props.style.margin, 0);
+  assert.equal(button.props.style.padding, '5px 12px'); assert.equal(button.props.style.gap, 6);
+  assert.equal(button.props.style.background, undefined, 'scoped CSS must still own hover background');
+  assert.deepEqual(button.props.children[0], icon, 'preserve brand geometry; scoped CSS sizes the SVG to 16px');
+  assert.equal(findElement(tree, n => n.props?.role === 'dialog'), dialog, 'dialog labels, controls and styles are untouched');
+  env.form.update({value: {preferences: normalize({sidebar: {names: {[footerId]: '另一名称'}}})}});
+  const updated = entry.component(props);
+  assert.equal(updated.type, deferred.type, 'rename must retain the wrapper component identity');
+  assert.equal(findElement(renderActionOutput(updated), n => n.type === 'button').props.title, '另一名称');
+  for (const off of env.cleanups.reverse()) off();
+  assert.equal(entry.component, registration);
+});
+
+test('deferred null and false footer components do not manufacture a More row or pin', () => {
+  for (const value of [null, false]) {
+    const env = runtime();
+    const entry = {options: action, component: props => React.createElement(() => value, props)};
+    env.publishSlot('sidebar.footer.action', [entry]);
+    let wrapped = 0;
+    const tree = renderActionOutput(entry.component({wide: true, dshsbMenuWrap: () => { wrapped++; }}));
+    assert.equal(tree, value); assert.equal(wrapped, 0);
+  }
+});
+
+test('late footer registration and removal update management and root rendering without fake registrations', () => {
+  const lateOptions = {id: 'late-action', label: 'Late action', order: 90};
+  const lateId = 'dsh-sidebar:action:late-action';
+  function LateAction(props) { return React.createElement('button', props, lateOptions.label); }
+  const late = {options: lateOptions, component: LateAction};
+  const env = runtime({sidebar: {names: {[lateId]: 'Late renamed'}}});
+  assert.equal(rowNode(env.page(), 'sidebar', lateId), undefined);
+  env.publishSlot('sidebar.footer.action', [env.nativeFooter, late]);
+  assert.ok(rowNode(env.page(), 'sidebar', lateId));
+  assert.equal(late.component({}).props.children, 'Late renamed');
+  assertOriginalFooterIds(footerSeat(projectedNavigation(env)), [action.id, lateOptions.id]);
+  env.publishSlot('sidebar.footer.action', [env.nativeFooter]);
+  assert.equal(rowNode(env.page(), 'sidebar', lateId), undefined);
+  assertOriginalFooterIds(footerSeat(projectedNavigation(env)));
+  assert.equal(env.slots.get('sidebar.panellist').length, 1);
+  for (const off of env.cleanups.reverse()) off();
+  assert.equal(late.component, LateAction);
+  assert.equal(env.subscribers.get('sidebar.footer.action').size, 0);
+});
+
+
+test('mixed More renders folded footer and panel once, preserves native pinned entries and pins original preference IDs', async () => {
+  const env = runtime({sidebar: {order: [MORE_ID, footerId, 'plugins', WORKSPACE_ID]}});
+  // A narrow shell owner must not leak into action rows inside the wide More menu.
+  const narrowProps = {...env.props, renderSlot: (...args) => env.props.renderSlot(...args)};
+  const boundary = env.shell.component(narrowProps);
+  const tree = boundary.type({...boundary.props, component: props => nativeNavigation({...props,
+    renderSlot: (name, owner, ...args) => props.renderSlot(name, {...owner, wide: false}, ...args)})});
+  const more = findElement(tree, node => node.type === 'NativeMore');
+  assert.deepEqual(Array.from(more.props.entries, row => row.id), ['plugins']);
+  assert.equal(more.props.entries[0].pinned, false);
+  const opened = [], pinned = [];
+  let dismissed = 0;
+  const pinnedNative = {id: 'native-pinned', pinned: true};
+  const owner = {
+    entries: [pinnedNative, ...more.props.entries],
+    onOpen: id => opened.push(id), onDismiss: () => { dismissed++; },
+    onPinnedChange: (id, value) => { pinned.push([id, value]); return more.props.onPinnedChange(id, value); },
+  };
+  const start = env.slotCalls.length, options = {native: true};
+  const menu = more.props.renderSlot('sidebar.panellist.actions', owner, options);
+  const calls = env.slotCalls.slice(start);
+  assert.equal(calls.filter(([name]) => name === 'sidebar.footer.action').length, 1);
+  assertOriginalFooterIds(menu, [action.id], true);
+  const nativeCalls = calls.filter(([name]) => name === 'sidebar.panellist.actions');
+  assert.equal(nativeCalls.length, 1);
+  assert.deepEqual(Array.from(nativeCalls[0][1].entries), [pinnedNative]);
+  assert.equal(nativeCalls[0][1].onOpen, owner.onOpen);
+  assert.equal(nativeCalls[0][1].onPinnedChange, owner.onPinnedChange);
+  assert.equal(nativeCalls[0][2], options);
+  const footerSlot = footerSlots(menu)[0];
+  const footerRow = env.nativeFooter.component(footerSlot.props.args[1]);
+  assert.equal(footerRow.props.children[0].props.children.props.dshsbMenuWrap, undefined, 'private wrapper never reaches the native action');
+  const rows = menu.props.children.map(node => node?.key === footerId ? footerRow : node).filter(node => node?.type === 'div' && node.key != null);
+  assert.deepEqual(rows.map(row => row.key), [footerId, 'plugins']);
+  const panelButton = findElement(rows[1], node => node.props?.role === 'menuitem');
+  assert.equal(panelButton.props['aria-current'], 'page');
+  panelButton.props.onClick();
+  assert.deepEqual(opened, ['plugins']); assert.equal(dismissed, 1);
+  const pinButton = rows[0].props.children[1];
+  pinButton.props.onClick(); await Promise.resolve();
+  assert.deepEqual(pinned, [[footerId, true]]);
+  assert.equal(dismissed, 2);
+  assert.deepEqual(Array.from(env.writes.at(-1).sidebar.order), [footerId, MORE_ID, 'plugins', WORKSPACE_ID]);
+  assert.equal(env.slots.get('sidebar.panellist').length, 1);
+  assert.equal(env.slots.get('sidebar.footer.action').length, 1);
+});
+
+test('unknown root without native More fails open and retains the original accessible footer slot', () => {
+  const env = runtime({sidebar: {order: [MORE_ID, footerId, WORKSPACE_ID, 'plugins']}});
+  const boundary = env.shell.component(env.props);
+  const tree = boundary.type({...boundary.props, component: props => React.createElement('aside', null,
+    React.createElement('nav', null),
+    React.createElement('section', {'data-native-workspaces': true}, props.renderSlot('sidebar.workspaces', {wide: true})),
+    React.createElement('footer', null, props.renderSlot('sidebar.footer.action', {wide: true})))});
+  const slots = footerSlots(tree);
+  assert.equal(slots.length, 1);
+  assert.equal(slots[0].props.args[2], undefined, 'fallback preserves the unfiltered original native footer renderer');
+  assert.deepEqual({...slots[0].props.args[1]}, {wide: true});
+  const click = () => {};
+  const native = env.nativeFooter.component({onClick: click});
+  assert.equal(native.props.onClick, click);
+  assert.equal(native.props['aria-label'], action.label);
+  assert.equal(env.writes.length, 0);
+});
+
+
+test('hidden native footer actions produce no empty More row or phantom pin and strip private owner props', () => {
+  for (const hiddenValue of [null, false]) {
+    const hiddenId = 'dsh-sidebar:action:hidden-toolbox';
+    const env = runtime({sidebar: {order: ['plugins', MORE_ID, hiddenId, WORKSPACE_ID, footerId]}});
+    const received = [];
+    const hidden = {options: {id: 'hidden-toolbox', label: 'Toolbox', order: 90},
+      component: props => { received.push(props); return hiddenValue; }};
+    env.publishSlot('sidebar.footer.action', [env.nativeFooter, hidden]);
+    const more = findElement(projectedNavigation(env), node => node.type === 'NativeMore');
+    const menu = more.props.renderSlot('sidebar.panellist.actions', {
+      entries: more.props.entries, onOpen() {}, onDismiss() {}, onPinnedChange() { throw Error('phantom pin'); },
+    });
+    assertOriginalFooterIds(menu, ['hidden-toolbox'], true);
+    const slotOwner = footerSlots(menu)[0].props.args[1];
+    let wrapped = 0;
+    const tree = hidden.component({...slotOwner, dshsbMenuWrap: node => { wrapped++; return slotOwner.dshsbMenuWrap(node); }});
+    assert.equal(tree, hiddenValue);
+    assert.equal(wrapped, 0, 'null/false native actions never receive independent menu chrome');
+    assert.deepEqual({...received[0]}, {wide: true});
+    assert.equal(findElement(tree, node => node.type === 'button'), undefined);
+    assert.equal(env.writes.length, 0);
+  }
+});
+
+function visibilityInput(env, group, id) {
+  const row = rowNode(env.page(), group, id);
+  assert.ok(row, `${group} keeps management row ${id}`);
+  const field = findElement(row, node => node.type?.name === 'VisibilityField');
+  assert.ok(field, `${group} exposes visibility for ${id}`);
+  const label = field.type(field.props);
+  assert.equal(label.type, 'label');
+  const input = findElement(label, node => node.type === 'input');
+  assert.equal(input.props.type, 'checkbox');
+  return input;
+}
+const settleVisibility = () => new Promise(resolve => setImmediate(resolve));
+
+test('both navigation groups persist visibility, retain management rows and restore native navigation', async () => {
+  for (const group of ['sidebar', 'settings']) {
+    const order = group === 'sidebar' ? ['plugins', MORE_ID, WORKSPACE_ID, footerId] : ['plugins', 'general'];
+    const preferences = {[group]: {order, names: {plugins: 'Renamed plugins'}}};
+    const env = runtime(preferences);
+    const nativeRows = () => (group === 'sidebar' ? env.shell : env.settings).component(env.props).props[group === 'sidebar' ? 'usePanels' : 'useSections'](x => x);
+    const initial = visibilityInput(env, group, 'plugins');
+    assert.equal(initial.props.checked, true);
+    assert.equal(initial.props.disabled, false);
+    assert.equal(initial.props['aria-label'], 'visible Renamed plugins');
+    initial.props.onChange({target: {checked: false}});
+    await settleVisibility();
+    assert.deepEqual(Array.from(env.writes.at(-1)[group].hidden), ['plugins']);
+    assert.deepEqual(Array.from(env.writes.at(-1)[group].order), order);
+    assert.deepEqual({...env.writes.at(-1)[group].names}, {plugins: 'Renamed plugins'});
+    assert.equal(nativeRows().some(row => row.id === 'plugins'), false);
+    assert.equal(visibilityInput(env, group, 'plugins').props.checked, false);
+    if (group === 'sidebar') {
+      const more = findElement(projectedNavigation(env), node => node.type === 'NativeMore');
+      assert.equal(more.props.entries.some(row => row.id === 'plugins'), false);
+    }
+    const reloaded = runtime(env.writes.at(-1));
+    assert.equal(visibilityInput(reloaded, group, 'plugins').props.checked, false);
+    visibilityInput(env, group, 'plugins').props.onChange({target: {checked: true}});
+    await settleVisibility();
+    assert.equal(visibilityInput(env, group, 'plugins').props.checked, true);
+    assert.equal(nativeRows().find(row => row.id === 'plugins').label, 'Renamed plugins');
+    assert.equal(env.writes.at(-1)[group].hidden?.includes('plugins') ?? false, false);
+    assert.deepEqual(Array.from(env.writes.at(-1)[group].order), order);
+    assert.deepEqual({...env.writes.at(-1)[group].names}, {plugins: 'Renamed plugins'});
+  }
+});
+
+test('hidden footer actions disappear from their root seat or More without losing their management checkbox', async () => {
+  for (const folded of [false, true]) {
+    const order = folded ? ['plugins', MORE_ID, footerId, WORKSPACE_ID] : ['plugins', MORE_ID, WORKSPACE_ID, footerId];
+    const env = runtime({sidebar: {order, names: {[footerId]: 'Custom devices'}}});
+    const visibleFooter = () => {
+      const tree = projectedNavigation(env);
+      if (!folded) return footerSlots(footerSeat(tree));
+      const more = findElement(tree, node => node.type === 'NativeMore');
+      return footerSlots(more.props.renderSlot('sidebar.panellist.actions', {entries: more.props.entries, onOpen() {}, onDismiss() {}}));
+    };
+    assert.equal(visibleFooter().length, 1);
+    visibilityInput(env, 'sidebar', footerId).props.onChange({target: {checked: false}});
+    await settleVisibility();
+    assert.equal(visibilityInput(env, 'sidebar', footerId).props.checked, false);
+    assert.equal(visibleFooter().length, 0);
+    assert.deepEqual(Array.from(env.writes.at(-1).sidebar.hidden), [footerId]);
+    assert.deepEqual(Array.from(env.writes.at(-1).sidebar.order), order);
+    assert.equal(env.writes.at(-1).sidebar.names[footerId], 'Custom devices');
+    assert.equal(visibilityInput(runtime(env.writes.at(-1)), 'sidebar', footerId).props.checked, false);
+    visibilityInput(env, 'sidebar', footerId).props.onChange({target: {checked: true}});
+    await settleVisibility();
+    assert.equal(visibleFooter().length, 1);
+    assert.equal(visibilityInput(env, 'sidebar', footerId).props.checked, true);
+  }
+});
+
+test('readonly and self-protected manager visibility cannot write, and boundary rows have no checkbox', () => {
+  const env = runtime();
+  for (const id of [MORE_ID, WORKSPACE_ID]) {
+    const row = rowNode(env.page(), 'sidebar', id);
+    assert.ok(row);
+    assert.equal(findElement(row, node => node.type?.name === 'VisibilityField'), undefined);
+    assert.equal(findElement(row, node => node.props?.type === 'checkbox'), undefined);
+  }
+  const protectedInput = visibilityInput(env, 'settings', 'dsh-sidebar');
+  assert.equal(protectedInput.props.checked, true);
+  assert.equal(protectedInput.props.disabled, true);
+  protectedInput.props.onChange({target: {checked: false}});
+  for (const group of ['sidebar', 'settings']) {
+    const stale = visibilityInput(env, group, 'plugins');
+    env.form.update({writable: false});
+    const readonly = visibilityInput(env, group, 'plugins');
+    assert.equal(readonly.props.disabled, true);
+    readonly.props.onChange({target: {checked: false}});
+    stale.props.onChange({target: {checked: false}});
+    env.form.update({writable: true});
+  }
+  assert.equal(env.writes.length, 0);
+});
+
+test('failed visibility saves roll back checked state, keep names/order and report an error', async () => {
+  for (const group of ['sidebar', 'settings']) {
+    for (const reject of [false, true]) {
+      const order = ['plugins', 'general'];
+      const env = runtime({[group]: {order, names: {plugins: 'Custom plugins'}}});
+      let finish;
+      env.form.set = () => new Promise((resolve, fail) => { finish = () => reject ? fail(Error('offline')) : resolve(false); });
+      visibilityInput(env, group, 'plugins').props.onChange({target: {checked: false}});
+      assert.equal(visibilityInput(env, group, 'plugins').props.checked, false, 'optimistic checkbox state');
+      finish();
+      await settleVisibility();
+      assert.equal(visibilityInput(env, group, 'plugins').props.checked, true);
+      const status = findElement(env.page(), node => node.props?.role === 'status');
+      assert.equal(status.props.children, 'error');
+      assert.match(status.props.className, /dshsb-error/);
+      const field = findElement(rowNode(env.page(), group, 'plugins'), node => node.type?.name === 'VisibilityField');
+      assert.deepEqual(Array.from(field.props.preference.order), order);
+      assert.deepEqual({...field.props.preference.names}, {plugins: 'Custom plugins'});
+    }
+  }
+});
+
+test('native and mixed More share scoped native-sized menu styles', () => {
+  for (const order of [['plugins', MORE_ID, WORKSPACE_ID, footerId], [MORE_ID, footerId, 'plugins', WORKSPACE_ID]]) {
+    const env = runtime({sidebar: {order}});
+    const more = findElement(projectedNavigation(env), node => node.type === 'NativeMore');
+    const menu = more.props.renderSlot('sidebar.panellist.actions', {entries: more.props.entries, onOpen() {}, onDismiss() {}});
+    assert.equal(menu.props.className, 'dshsb-more-content');
+    assert.equal(findElement(menu, node => node.type === 'style').props.children, MORE_MENU_CSS);
+    assert.ok(findElement(menu, node => node.props?.className === 'dshsb-more-native'));
+  }
+  assert.match(MORE_MENU_CSS, /font-size:14px/);
+  assert.match(MORE_MENU_CSS, /line-height:22px/);
+  assert.match(MORE_MENU_CSS, /padding:5px 12px;gap:6px/);
+  assert.match(MORE_MENU_CSS, /svg\{width:16px;height:16px/);
+  assert.ok(MORE_MENU_CSS.trim().split('\n').every(rule => rule.startsWith('.dshsb-more-content')));
+});
+
+test('menu projection preserves nulls, trigger callbacks and classes and never changes dialog controls', () => {
+  const h = React.createElement, click = () => {}, pointer = () => {};
+  const dialog = h('section', {role: 'dialog'}, h('button', {className: 'dialog-button', onClick: click}, 'Confirm'));
+  const modal = h('section', {'aria-modal': true}, h('button', null, 'Modal'));
+  const trigger = h('button', {className: 'native-trigger', onClick: click, onPointerDown: pointer, disabled: true}, 'Devices');
+  const later = h('button', {className: 'later-trigger'}, 'Later');
+  const tree = [null, false, dialog, modal, h('div', null, trigger, later), null];
+  const projected = projectMenuTrigger(React, tree);
+  assert.equal(projectMenuTrigger(React, null), null);
+  assert.equal(projectMenuTrigger(React, false), false);
+  assert.equal(projected[0], null); assert.equal(projected[1], false); assert.equal(projected[5], null);
+  assert.equal(projected[2], dialog); assert.equal(projected[3], modal);
+  const [button, untouched] = projected[4].props.children;
+  assert.equal(button.props.className, 'native-trigger dshsb-more-item');
+  assert.equal(button.props.role, 'menuitem');
+  assert.equal(button.props.onClick, click); assert.equal(button.props.onPointerDown, pointer);
+  assert.equal(button.props.disabled, true);
+  assert.equal(untouched, later);
+  assert.equal(trigger.props.role, undefined, 'original trigger remains untouched');
+});
+
+test('only More and Workspaces use a themed separator background without disabling drag handles', () => {
+  const env = runtime(), page = env.page();
+  for (const id of [MORE_ID, WORKSPACE_ID]) {
+    const row = rowNode(page, 'sidebar', id);
+    assert.equal(row.props['data-dshsb-boundary'], true);
+    assert.equal(gripNode(row).props.disabled, false);
+  }
+  for (const [group, id] of [['sidebar', 'plugins'], ['sidebar', footerId], ['settings', 'general']]) {
+    assert.equal(rowNode(page, group, id).props['data-dshsb-boundary'], false);
+  }
+  const css = findElement(page, node => node.type === 'style').props.children;
+  assert.match(css, /\.dshsb-row\[data-dshsb-boundary=true\]\{background:var\(--dsw-alias-bg-layer-2\)\}/);
+});
+
+test('missing, empty or whitespace-only registered titles fall back to the original English ID', () => {
+  for (const label of [undefined, '', '   ', () => '   ']) {
+    const env = runtime();
+    env.publishSlot('sidebar.footer.action', [{options: {id: 'unnamed-menu', label}, component: () => null}]);
+    const row = rowNode(env.page(), 'sidebar', 'dsh-sidebar:action:unnamed-menu');
+    assert.equal(findElement(row, node => node.type?.name === 'NameField').props.name, 'unnamed-menu');
+    assert.equal(findElement(row, node => node.props?.className === 'dshsb-id').props.children, 'unnamed-menu');
+  }
+});
+
+test('ordinary subtitles use original English IDs while primary names retain custom text or fall back to IDs', () => {
+  for (const order of [['plugins', MORE_ID, WORKSPACE_ID, footerId], [MORE_ID, 'plugins', footerId, WORKSPACE_ID]]) {
+    const env = runtime({sidebar: {order, names: {plugins: '扩展', [footerId]: '自定义设备'}}, settings: {names: {general: '自定义常规'}}});
+    const unnamed = {options: {id: 'cordis-panel'}, component: () => null};
+    env.publishSlot('sidebar.footer.action', [env.nativeFooter, unnamed]);
+    const page = env.page();
+    const subtitle = id => findElement(rowNode(page, 'sidebar', id), node => node.props?.className === 'dshsb-id').props.children;
+    assert.equal(subtitle('plugins'), 'plugins');
+    assert.equal(findElement(rowNode(page, 'settings', 'general'), node => node.props?.className === 'dshsb-id').props.children, 'general');
+    assert.equal(subtitle(footerId), action.id);
+    assert.equal(subtitle('dsh-sidebar:action:cordis-panel'), 'cordis-panel');
+    const primary = (group, id) => findElement(rowNode(page, group, id), node => node.type?.name === 'NameField').props.name;
+    assert.equal(primary('sidebar', 'plugins'), '扩展');
+    assert.equal(primary('sidebar', footerId), '自定义设备');
+    assert.equal(primary('settings', 'general'), '自定义常规');
+    assert.equal(primary('sidebar', 'dsh-sidebar:action:cordis-panel'), 'cordis-panel');
+    assert.equal(findElement(rowNode(page, 'sidebar', MORE_ID), node => node.props?.className === 'dshsb-fold-state').props.children, 'moreBoundary');
+    assert.equal(findElement(rowNode(page, 'sidebar', WORKSPACE_ID), node => node.props?.className === 'dshsb-fold-state').props.children, 'workspaceBoundaryHint');
+  }
 });

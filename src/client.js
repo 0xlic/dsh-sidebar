@@ -19,9 +19,11 @@ const dicts = {
     offline: '保存失败，无法确认服务器最新配置；当前显示最后已确认的配置。请恢复连接后刷新。',
     loading: '正在读取插件配置…', saving: '正在保存到插件配置…',
     unavailable: '插件配置尚不可用，请重启应用以加载新版服务端插件。', readonly: '当前连接无配置写入权限。',
-    rename: '菜单名称', defaultName: '恢复原名', more: '更多',
+    rename: '菜单名称', defaultName: '恢复原名', more: '更多', visible: '显示', selfProtected: '保留管理入口以便恢复隐藏的菜单',
     moreHint: '「更多」是收纳分界线：上方直接显示，下方收入更多。拖动分界线或菜单调整，重启后保留。',
-    folded: '已收入更多', moreBoundary: '收纳分界线',
+    folded: '已收入更多', moreBoundary: '收纳分界线', workspaceBoundary: '工作区', workspaceBoundaryHint: '工作区分割项',
+    bottomEntry: '显示在工作区下方', actionEntry: '插件动作', pinMenu: '移出更多',
+    layoutHint: '「工作区」上方显示功能入口，下方显示底部菜单。「更多」收纳其后至工作区分割项之前的菜单；更多在工作区下方时，收纳其后的菜单。两个分割项均可拖动。',
     workspace: '工作区设置', pinWorkspace: '置顶工作区',
     activeIndicator: '活跃工作区标识', activeIndicatorHint: '工作区有运行中或等待交互的会话时，在右侧显示会话同款圆圈；悬停时隐藏，固定图标位于其右侧。',
     activityOngoing: '工作区有运行中的会话', activityWarning: '工作区有等待交互的会话',
@@ -40,9 +42,11 @@ const dicts = {
     offline: 'Save failed and the latest server state could not be confirmed. Showing the last confirmed configuration; reconnect and refresh.',
     loading: 'Loading plugin configuration…', saving: 'Saving plugin configuration…',
     unavailable: 'Plugin configuration is unavailable. Restart the app to load the updated server plugin.', readonly: 'This connection cannot write configuration.',
-    rename: 'Menu name', defaultName: 'Restore name', more: 'More',
+    rename: 'Menu name', defaultName: 'Restore name', more: 'More', visible: 'Show', selfProtected: 'Keep the manager reachable to restore hidden entries',
     moreHint: 'More is the boundary: entries above stay visible; entries below go into More. Drag the boundary or entries to adjust. Saved across restarts.',
-    folded: 'Inside More', moreBoundary: 'Folding boundary',
+    folded: 'Inside More', moreBoundary: 'Folding boundary', workspaceBoundary: 'Workspaces', workspaceBoundaryHint: 'Workspace boundary',
+    bottomEntry: 'Below workspaces', actionEntry: 'Plugin action', pinMenu: 'Move out of More',
+    layoutHint: 'Entries above Workspaces appear at the top; entries below appear at the bottom. More folds the following entries up to Workspaces, or all following entries when More is below Workspaces. Drag either boundary to adjust.',
     workspace: 'Workspace settings', pinWorkspace: 'Pin workspaces',
     activeIndicator: 'Active workspace indicator', activeIndicatorHint: 'Show the session status circle on the right when sessions are running or awaiting interaction. Hidden on hover, before the pin marker.',
     activityOngoing: 'Workspace has running sessions', activityWarning: 'Workspace has sessions awaiting interaction',
@@ -63,10 +67,11 @@ const css = `
 .dshsb-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;gap:12px;background:var(--dsw-alias-bg-layer-2)}.dshsb-head h3{font-size:15px;margin:0;font-weight:600}
 .dshsb-head h3{flex:1;min-width:0}.dshsb-disclosure{display:flex;align-items:center;gap:8px;width:100%;border:0;padding:0;background:transparent;text-align:start;font-weight:600!important;min-height:32px}.dshsb-disclosure:focus-visible{outline-offset:4px!important}.dshsb-chevron{display:inline-block;flex:none;font-size:12px;transform:rotate(0deg)}.dshsb-disclosure[aria-expanded=true] .dshsb-chevron{transform:rotate(90deg)}.dshsb-panel[hidden]{display:none}
 .dshsb-row{position:relative;display:flex;gap:12px;align-items:center;padding:12px 18px;min-height:62px;border-top:1px solid var(--dsw-alias-border-l1)}
+.dshsb-row[data-dshsb-boundary=true]{background:var(--dsw-alias-bg-layer-2)}
 .dshsb-page .dshsb-grip{display:flex;align-items:center;justify-content:center;align-self:stretch;flex:none;width:32px;min-height:36px;border:0;border-radius:6px;padding:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:grab;touch-action:none;user-select:none}.dshsb-grip:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}.dshsb-page .dshsb-grip:active:not(:disabled){cursor:grabbing}.dshsb-grip svg{pointer-events:none}.dshsb-row[data-dragging=true]{opacity:.5}.dshsb-row[data-drop=before]::before,.dshsb-row[data-drop=after]::after{content:'';position:absolute;left:12px;right:12px;height:2px;z-index:1;background:var(--dsw-alias-brand-primary);pointer-events:none}.dshsb-row[data-drop=before]::before{top:0}.dshsb-row[data-drop=after]::after{bottom:0}
-.dshsb-label{flex:1;min-width:0;overflow-wrap:anywhere}.dshsb-id,.dshsb-fold-state{display:block;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dshsb-label{flex:1;min-width:0;overflow-wrap:anywhere}.dshsb-visibility{display:inline-flex;align-items:center;gap:6px;flex:none;font-size:12px;color:var(--dsw-alias-label-secondary);cursor:pointer}.dshsb-visibility input{width:16px;height:16px;margin:0;accent-color:var(--dsw-alias-brand-primary)}.dshsb-visibility:has(input:disabled){cursor:not-allowed;opacity:.5}.dshsb-id,.dshsb-fold-state{display:block;font-size:11px;color:var(--dsw-alias-label-secondary)}
 .dshsb-icon{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex:none;color:var(--dsw-alias-label-secondary)}
-.dshsb-name{display:flex;align-items:center;gap:6px}.dshsb-name-input{min-width:0;width:100%;font:inherit;color:inherit;line-height:inherit;background:transparent;border:1px solid transparent;border-radius:6px;padding:2px 4px;margin-left:-5px}.dshsb-name-input:hover:not(:disabled){border-color:var(--dsw-alias-border-l1)}.dshsb-name-input:focus{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}.dshsb-name-reset{font-size:11px!important;flex:none;padding:3px 6px!important}
+.dshsb-name{display:flex;align-items:center;gap:6px;min-width:0}.dshsb-page .dshsb-name-input,.dshsb-page .dshsb-name-input:hover,.dshsb-page .dshsb-name-input:focus{field-sizing:content;flex:0 1 auto;min-width:2ch;max-width:100%;width:auto;font:inherit;color:inherit;line-height:inherit;background:transparent!important;border:0!important;border-radius:0;outline:none!important;box-shadow:none!important;padding:2px 0;margin:0}.dshsb-page .dshsb-name-input:focus-visible{text-decoration:underline dotted var(--dsw-alias-label-tertiary);text-underline-offset:3px}.dshsb-page .dshsb-name-reset{display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;min-height:0;padding:0;border:0;background:transparent;border-radius:4px;color:var(--dsw-alias-label-secondary)}.dshsb-page .dshsb-name-reset:hover:not(:disabled){color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2)}
 .dshsb-page button{font:inherit;color:inherit;cursor:pointer}.dshsb-button{background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:9px;padding:6px 12px;min-height:32px}.dshsb-button:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2)}.dshsb-page button:disabled{opacity:.4;cursor:not-allowed}.dshsb-page button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:3px}
 .dshsb-setting-copy{flex:1;min-width:0}.dshsb-setting-hint{display:block;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary);margin-top:4px}.dshsb-page .dshsb-switch{position:relative;flex:none;width:36px;height:22px;border:0;border-radius:99px;padding:0;background:var(--dsw-alias-state-idle-primary)}.dshsb-switch[aria-checked=true]{background:var(--dsw-alias-brand-primary)}.dshsb-switch span{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-bg-base)}.dshsb-switch[aria-checked=true] span{transform:translateX(14px)}
 .dshsb-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}.dshsb-empty{padding:18px}
@@ -112,12 +117,51 @@ return {
       // Still invoke the native hook at each call site, but do not let its
       // volatile pin store disagree with the persistent ordering boundary.
       const useEntryPins = selector => { props.useEntryPins(identity); return selector([]); };
-      const tree = Component({...props, usePanels, useEntryPins});
-      return projectSidebarTree(React, tree, panels, preference, activePanelId, (id, pinned) => {
+      // Keep the root's authorized child renderer: actions are never cloned into
+      // panel registrations, and retain their own state, permissions and handlers.
+      const actionRows = React.useSyncExternalStore(footerCatalog.subscribe, footerCatalog.getSnapshot);
+      let footerOwner;
+      const renderSlot = (name, owner, ...args) => {
+        const original = props.renderSlot(name, owner, ...args);
+        if (name !== 'sidebar.footer.action') return original;
+        footerOwner = owner;
+        return h('div', {'data-dshsb-footer-seat': true, style: {width: '100%', minWidth: 0, display: 'flex', flexDirection: 'column'}}, original);
+      };
+      const tree = Component({...props, usePanels, useEntryPins, renderSlot});
+      const menuRow = (content, row, owner) => h('div', {key: row.id, style: {display: 'flex', alignItems: 'center'}},
+        h('div', {style: {flex: 1, minWidth: 0}}, content),
+        h('button', {type: 'button', role: 'menuitem', className: 'dshsb-more-pin',
+          title: t('pinMenu'), 'aria-label': `${t('pinMenu')} ${row.label}`,
+          onClick: () => { owner.onPinnedChange(row.id, true); owner.onDismiss(); }},
+          h('svg', {width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', 'stroke-width': 1, 'aria-hidden': true},
+            h('path', {d: 'm9 2 5 5-3 1-3 3-1-2-4 4 4-4-2-1 3-3Z'}))));
+      const renderFooter = (row, menuOwner) => h(React.Fragment, {key: row.id},
+        props.renderSlot('sidebar.footer.action', menuOwner
+          ? {wide: true, dshsbMenuWrap: tree => menuRow(projectMenuTrigger(React, tree), row, menuOwner)} : footerOwner || {wide: true}, {only: row.actionId}));
+      return projectSidebarTree(React, tree, [...panels, ...actionRows], preference, activePanelId, (id, pinned) => {
         const current = source.getSnapshot();
         if (!current.writable) { ctx.contextMenus.notify(t('readonly'), false); return; }
         return save(reorder(current.preferences, 'sidebar', catalogs.sidebar.getSnapshot(), id, MORE_ID, !pinned))
           .then(accepted => { if (!accepted && live) ctx.contextMenus.notify(t('error'), false); });
+      }, {
+        renderFooter,
+        renderMore: (nativeRender, name, owner, args, folded) => {
+          if (name !== 'sidebar.panellist.actions') return nativeRender(name, owner, ...args);
+          if (!folded.some(row => row.kind === 'footer')) {
+            return h('div', {className: 'dshsb-more-content'}, h('style', null, MORE_MENU_CSS),
+              h('div', {className: 'dshsb-more-native'}, nativeRender(name, owner, ...args)));
+          }
+          // Render the mixed folded sequence once; the native action contribution
+          // still owns browsing/creation, but receives no duplicate folded panels.
+          return h('div', {className: 'dshsb-more-content'},
+            h('style', null, MORE_MENU_CSS),
+            ...folded.map(row => row.kind === 'footer' ? renderFooter(row, owner)
+              : menuRow(h('button', {type: 'button', role: 'menuitem', className: 'dshsb-more-item',
+                'aria-current': row.id === activePanelId ? 'page' : undefined,
+                onClick: () => { owner.onOpen(row.id); owner.onDismiss(); }},
+                props.renderFactorySlot('sidebar.panel.icon', {id: row.id, size: 16, active: row.id === activePanelId}), row.label), row, owner)),
+            h('div', {className: 'dshsb-more-native'}, nativeRender(name, {...owner, entries: owner.entries.filter(row => row.pinned)}, ...args)));
+        },
       });
     }
     const compatibility = [];
@@ -142,7 +186,7 @@ return {
                 if (!compatibility.includes(name)) compatibility.push(name);
                 return h(Component, {...props, key: 'dshsb-original'});
               }
-              const useNavigation = selector => selector(arrange(originalHook(identity), state[group]));
+              const useNavigation = selector => selector(navigationRows(originalHook(identity), state[group]));
               if (group === 'sidebar' && [props.useEntryPins, props.usePanelInfo].every(fn => typeof fn === 'function')) {
                 return h(SidebarWithMore, {...props, key: 'dshsb-managed', component: Component,
                   preference: state.sidebar, [hookName]: useNavigation});
@@ -380,6 +424,36 @@ return {
         onCollapseAllWorkspaces: collapseAllWorkspaces});
     }
 
+    // Action labels are owned by their component, unlike panel labels. Adapt
+    // only exact matching label props/text, and restore on unload.
+    ctx.effect(() => {
+      const patches = new Map();
+      let enabled = true;
+      const sync = () => {
+        for (const entry of ctx.slots.entriesOfSlot('sidebar.footer.action')) {
+          if (patches.has(entry) || typeof entry.options.id !== 'string' || typeof entry.component !== 'function') continue;
+          const Component = entry.component;
+          function ActionAdapter({dshsbMenuWrap, ...props}) {
+            const {preferences} = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
+            React.useSyncExternalStore(subscribeLocale, getLocaleSnapshot);
+            const original = typeof entry.options.label === 'function' ? entry.options.label() : entry.options.label;
+            const label = preferences.sidebar.names?.[footerId(entry.options.id)] || original;
+            // Some actions register props => <FooterButton {...props}/> rather
+            // than returning the button itself. Resolve those boundaries during
+            // React rendering before renaming, styling or manufacturing a pin.
+            return projectActionOutput(React, Component(props), output => {
+              const tree = projectActionLabel(React, output, original, enabled ? label : original);
+              return enabled && typeof dshsbMenuWrap === 'function' ? dshsbMenuWrap(tree) : tree;
+            });
+          }
+          patches.set(entry, replaceComponent(entry, ActionAdapter));
+        }
+      };
+      const off = ctx.slots.subscribe('sidebar.footer.action', sync);
+      sync();
+      return () => { off(); enabled = false; for (const restore of patches.values()) restore(); };
+    });
+
     function catalog(name) {
       let version = -1, revision = -1, rows = [];
       return {
@@ -387,12 +461,12 @@ return {
           const v = ctx.slots.getVersion(name), r = ctx.locale.getSnapshot().revision;
           if (v !== version || r !== revision) {
             version = v; revision = r;
-            rows = ctx.slots.entriesOfSlot(name).map(entry => ({
-              id: entry.options.id,
-              order: entry.options.order ?? 0,
-              label: (typeof entry.options.label === 'function' ? entry.options.label() : entry.options.label) || entry.options.id,
-            })).filter(row => typeof row.id === 'string');
-            if (name === 'sidebar.panellist') rows = sidebarRows(rows, t('more'));
+            rows = ctx.slots.entriesOfSlot(name).map(entry => {
+              const label = typeof entry.options.label === 'function' ? entry.options.label() : entry.options.label;
+              return {id: entry.options.id, order: entry.options.order ?? 0,
+                label: typeof label === 'string' && label.trim() ? label : entry.options.id};
+            }).filter(row => typeof row.id === 'string');
+            if (name === 'sidebar.footer.action') rows = rows.map(row => ({...row, actionId: row.id, id: footerId(row.id), kind: 'footer'}));
           }
           return rows;
         },
@@ -402,7 +476,35 @@ return {
         },
       };
     }
-    const catalogs = {sidebar: catalog('sidebar.panellist'), settings: catalog('settings.section')};
+    const panelCatalog = catalog('sidebar.panellist'), footerCatalog = catalog('sidebar.footer.action');
+    let lastPanels, lastActions, sidebarSnapshot;
+    const sidebarCatalog = {
+      getSnapshot() {
+        const panels = panelCatalog.getSnapshot(), actions = footerCatalog.getSnapshot();
+        if (lastPanels !== panels || lastActions !== actions) {
+          lastPanels = panels; lastActions = actions;
+          sidebarSnapshot = sidebarRows([...panels, ...actions], t('more'), t('workspaceBoundary'));
+        }
+        return sidebarSnapshot;
+      },
+      subscribe(fn) {
+        const offPanels = panelCatalog.subscribe(fn), offActions = footerCatalog.subscribe(fn);
+        return () => { offPanels(); offActions(); };
+      },
+    };
+    const catalogs = {sidebar: sidebarCatalog, settings: catalog('settings.section')};
+    function VisibilityField({group, row, writable, preference}) {
+      if (isBoundary(row.id)) return null;
+      const protectedEntry = row.id === OWN_ID;
+      const checked = protectedEntry || !preference.hidden?.includes(row.id);
+      return h('label', {className: 'dshsb-visibility', title: protectedEntry ? t('selfProtected') : undefined},
+        h('input', {type: 'checkbox', checked, disabled: !writable || protectedEntry,
+          'aria-label': `${t('visible')} ${row.label}`,
+          onChange: event => {
+            if (!source.getSnapshot().writable || protectedEntry) return;
+            void save(setVisible(source.getSnapshot().preferences, group, row.id, event.target.checked));
+          }}), t('visible'));
+    }
     function NameField({group, row, name, writable}) {
       const [draft, setDraft] = React.useState(name);
       const draftVersion = React.useRef(0);
@@ -417,7 +519,7 @@ return {
         }
       };
       return h('div', {className: 'dshsb-name'},
-        h('input', {className: 'dshsb-name-input', value: draft, maxLength: 80, disabled: !writable,
+        h('input', {className: 'dshsb-name-input', value: draft, maxLength: 80, disabled: !writable, spellCheck: false,
           'aria-label': `${t('rename')} ${row.label}`, placeholder: row.label,
           onChange: event => { draftVersion.current += 1; setDraft(event.target.value); },
           onBlur: event => commit(event.target.value),
@@ -426,8 +528,11 @@ return {
             if (event.key === 'Escape') { event.preventDefault(); event.currentTarget.value = name; setDraft(name); event.currentTarget.blur(); }
           },
         }),
-        name !== row.label ? h('button', {type: 'button', className: 'dshsb-button dshsb-name-reset', disabled: !writable,
-          onClick: () => save(rename(source.getSnapshot().preferences, group, row.id, ''))}, t('defaultName')) : null);
+        name !== row.label ? h('button', {type: 'button', className: 'dshsb-name-reset', disabled: !writable,
+          title: t('defaultName'), 'aria-label': `${t('defaultName')} ${row.label}`,
+          onClick: () => save(rename(source.getSnapshot().preferences, group, row.id, ''))},
+          h('svg', {width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.25,
+            'aria-hidden': true, focusable: false}, h('path', {d: 'M3 6a5 5 0 1 1 0 4M3 2v4h4', 'stroke-linecap': 'round', 'stroke-linejoin': 'round'}))) : null);
     }
     function Page({renderFactorySlot, renderSettingsIcon}) {
       const [expanded, setExpanded] = React.useState(readPanelState);
@@ -546,7 +651,6 @@ return {
         h('span', {className: 'dshsb-sr-only', id: `${panelId}-drag-hint`}, t('dragHint')),
         ...GROUPS.map(group => {
           const rows = arrange(all[group], state[group]);
-          const boundary = group === 'sidebar' ? rows.findIndex(row => row.id === MORE_ID) : -1;
           return h('section', {key: group, className: 'dshsb-card', 'aria-label': t(group)},
             h('div', {className: 'dshsb-head'},
               h('h3', null, h('button', {type: 'button', className: 'dshsb-disclosure',
@@ -555,10 +659,11 @@ return {
                 h('span', {className: 'dshsb-chevron', 'aria-hidden': true}, '▶'), t(group)))),
             h('div', {className: 'dshsb-panel', id: `${panelId}-${group}`, hidden: !expanded[group],
               role: 'region', 'aria-labelledby': `${panelId}-${group}-toggle`},
-            group === 'sidebar' ? h('p', {className: 'dshsb-empty'}, t('moreHint')) : null,
+            group === 'sidebar' ? h('p', {className: 'dshsb-empty'}, t('layoutHint')) : null,
             rows.length === 0 ? h('p', {className: 'dshsb-empty'}, t('empty')) : null,
             ...rows.map((row, i) => h('div', {key: row.id, className: 'dshsb-row',
               'data-dshsb-row': row.id, 'data-dshsb-group': group,
+              'data-dshsb-boundary': isBoundary(row.id),
               'data-dragging': dragView?.group === group && dragView.id === row.id,
               'data-drop': dragView?.group === group && dragView.targetId === row.id && dragView.id !== row.id
                 ? dragView.after ? 'after' : 'before' : undefined},
@@ -574,13 +679,18 @@ return {
               h('span', {className: 'dshsb-icon', 'aria-hidden': true}, row.id === MORE_ID
                 ? h('svg', {width: 18, height: 18, viewBox: '0 0 18 18', fill: 'currentColor'},
                   ...[3, 9, 15].map(cx => h('circle', {key: cx, cx, cy: 9, r: 1.5})))
+                : row.id === WORKSPACE_ID || row.kind === 'footer'
+                  ? h('svg', {width: 18, height: 18, viewBox: '0 0 18 18', fill: 'none', stroke: 'currentColor', 'stroke-width': 1, 'aria-hidden': true},
+                    h('path', {d: row.id === WORKSPACE_ID ? 'M2 5h5l2-2h7v12H2Z' : 'M3 3h4v4H3Zm8 0h4v4h-4ZM3 11h4v4H3Zm8 0h4v4h-4Z'}))
                 : group === 'sidebar'
                   ? renderFactorySlot('sidebar.panel.icon', {id: row.id, size: 18, active: false})
                   : renderSettingsIcon?.(row.id, 16)),
-              h('div', {className: 'dshsb-label'}, row.id === MORE_ID ? h('strong', null, row.label) : h(NameField, {group,
+              h('div', {className: 'dshsb-label'}, isBoundary(row.id) ? h('strong', null, row.label) : h(NameField, {group,
                 row: all[group].find(entry => entry.id === row.id), name: row.label, writable}),
-                h('span', {className: row.id === MORE_ID || group === 'sidebar' && i > boundary ? 'dshsb-fold-state' : 'dshsb-id'},
-                  row.id === MORE_ID ? t('moreBoundary') : group === 'sidebar' && i > boundary ? t('folded') : row.id))))));
+                h('span', {className: isBoundary(row.id) ? 'dshsb-fold-state' : 'dshsb-id'},
+                  row.id === MORE_ID ? t('moreBoundary') : row.id === WORKSPACE_ID ? t('workspaceBoundaryHint')
+                    : row.actionId || row.id)),
+              isBoundary(row.id) ? null : h(VisibilityField, {group, row, writable, preference: state[group]})))));
         }),
         h('section', {className: 'dshsb-card', 'aria-label': t('workspace')},
           h('div', {className: 'dshsb-head'}, h('h3', null,
@@ -637,6 +747,14 @@ return {
                   void save({...current, workspace: {...current.workspace, dynamicSort: !enabled}});
                 }}, h('span', {'aria-hidden': true}))))));
     }
+    ctx.slots.inject('settings.section.icon', () => ctx.slots.register({
+      name: 'settings.section.icon', id: OWN_ID,
+    }, ({size = 16}) => h('svg', {
+      width: size, height: size, viewBox: '0 0 16 16', fill: 'none',
+      stroke: 'currentColor', strokeWidth: 1.25, strokeLinecap: 'round', strokeLinejoin: 'round',
+      'aria-hidden': true, focusable: false,
+    }, h('rect', {x: 1.5, y: 2, width: 13, height: 12, rx: 2}),
+    h('path', {d: 'M6 2v12m3-8.5h3M9 8h2M9 10.5h3M3.25 6.75 4.5 8l-1.25 1.25'}))));
     ctx.slots.inject('settings.section', () => ctx.slots.register({
       name: 'settings.section', id: OWN_ID, order: 50, label: () => t('title'),
     }, Page));

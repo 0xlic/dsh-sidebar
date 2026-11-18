@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createPreferencesController} from '../src/preferences.js';
-import {normalize, rename, arrange, sidebarRows, splitSidebar, reorder, MORE_ID} from '../src/model.js';
+import {normalize, rename, arrange, navigationRows, setVisible, OWN_ID, footerId, sidebarRows, splitSidebar, reorder, MORE_ID, WORKSPACE_ID} from '../src/model.js';
 import {Config} from '../index.js';
 
 function fakeForm(initial, options = {}) {
@@ -22,14 +22,14 @@ function fakeForm(initial, options = {}) {
   };
 }
 
-test('host schema exposes menu order/names and optional workspace sorting as live-editable preferences', () => {
+test('host schema exposes menu order/names/visibility and optional workspace sorting as live-editable preferences', () => {
   assert.equal(Config.dict.preferences.meta.volatile, true);
-  assert.deepEqual(Object.keys(Config.dict.preferences.dict.sidebar.dict).sort(), ['names', 'order']);
-  assert.deepEqual(Object.keys(Config.dict.preferences.dict.settings.dict).sort(), ['names', 'order']);
+  assert.deepEqual(Object.keys(Config.dict.preferences.dict.sidebar.dict).sort(), ['hidden', 'names', 'order']);
+  assert.deepEqual(Object.keys(Config.dict.preferences.dict.settings.dict).sort(), ['hidden', 'names', 'order']);
   const input = {sidebar: {order: ['b', 'a'], names: {b: '自定义菜单'}}, settings: {}};
   const parsed = Config({preferences: input}).preferences.get();
   assert.deepEqual(parsed.sidebar.order, ['b', 'a']);
-  assert.equal(Object.hasOwn(parsed.sidebar, 'hidden'), false);
+  assert.deepEqual(parsed.sidebar.hidden, []);
   assert.equal(parsed.sidebar.names.b, '自定义菜单');
   assert.deepEqual(parsed.settings.names, {});
   assert.ok(Config({}).preferences.get() == null);
@@ -65,7 +65,7 @@ test('names trim and persist alongside order; clearing restores native labels', 
   prefs = rename(prefs, 'sidebar', 'a', '  我的菜单  ');
   assert.deepEqual(arrange(rows, prefs.sidebar).map(row => row.label), ['Other', '我的菜单']);
   assert.deepEqual(prefs.sidebar.order, ['b', 'a']);
-  assert.equal(Object.hasOwn(prefs.sidebar, 'hidden'), false);
+  assert.deepEqual(prefs.sidebar.hidden, ['b']);
   assert.equal(normalize(JSON.parse(JSON.stringify(prefs))).sidebar.names.a, '我的菜单');
   assert.equal(arrange(rows, rename(prefs, 'sidebar', 'a', '').sidebar)[1].label, 'Original');
   assert.equal(rename(prefs, 'sidebar', 'a', 'x'.repeat(100)).sidebar.names.a.length, 80);
@@ -106,11 +106,11 @@ test('one-time browser migration clears local data only after the host accepts t
   assert.equal(source.getSnapshot().status, 'saving');
   assert.equal(cleared, false);
   assert.deepEqual(form.writes[0].value, migrated);
-  assert.deepEqual(migrated.sidebar, {order: ['a', MORE_ID, 'b', 'unloaded'], names: {a: '我的菜单', unloaded: '未加载'}});
+  assert.deepEqual(migrated.sidebar, {order: ['a', MORE_ID, 'b', 'unloaded'], hidden: ['a', 'b'], names: {a: '我的菜单', unloaded: '未加载'}});
   assert.deepEqual(arrange([{id: 'a'}, {id: 'b'}], migrated.sidebar).map(row => row.id), ['a', 'b']);
   const split = splitSidebar([{id: 'a'}, {id: 'b'}], migrated.sidebar);
-  assert.deepEqual(split.visible.map(row => row.id), ['a']);
-  assert.deepEqual(split.folded.map(row => row.id), ['b']);
+  assert.deepEqual(split.visible.map(row => row.id), []);
+  assert.deepEqual(split.folded.map(row => row.id), []);
   form.settle(true);
   await Promise.resolve();
   assert.equal(cleared, true);
@@ -119,14 +119,14 @@ test('one-time browser migration clears local data only after the host accepts t
   source.dispose();
 });
 
-test('host schema and normalization retain only the sidebar ordering boundary', () => {
+test('host schema and normalization retain both ordering boundaries only in sidebar order', () => {
   const parsed = Config({preferences: {
-    sidebar: {order: ['a', MORE_ID, 'plugins'], names: {[MORE_ID]: '更多', plugins: '扩展'}},
-    settings: {order: ['models', MORE_ID, 'dsh-sidebar'], names: {[MORE_ID]: 'More', models: '模型'}},
+    sidebar: {order: ['a', MORE_ID, 'plugins', WORKSPACE_ID], names: {[MORE_ID]: '更多', [WORKSPACE_ID]: '工作区', plugins: '扩展'}},
+    settings: {order: ['models', MORE_ID, WORKSPACE_ID, 'dsh-sidebar'], names: {[MORE_ID]: 'More', [WORKSPACE_ID]: 'Workspaces', models: '模型'}},
   }}).preferences.get();
-  assert.deepEqual(parsed.sidebar.order, ['a', MORE_ID, 'plugins']);
+  assert.deepEqual(parsed.sidebar.order, ['a', MORE_ID, 'plugins', WORKSPACE_ID]);
   const restored = normalize(JSON.parse(JSON.stringify(parsed)));
-  assert.deepEqual(restored.sidebar, {order: ['a', MORE_ID, 'plugins'], names: {plugins: '扩展'}});
+  assert.deepEqual(restored.sidebar, {order: ['a', MORE_ID, 'plugins', WORKSPACE_ID], names: {plugins: '扩展'}});
   assert.deepEqual(restored.settings, {order: ['models', 'dsh-sidebar'], names: {models: '模型'}});
 });
 
@@ -137,7 +137,7 @@ test('moving a boundary across native plugin entries persists to a fresh control
   const source = createPreferencesController(form);
   const next = reorder(initial, 'sidebar', sidebarRows(rows), MORE_ID, 'plugins');
   const saved = source.save(next);
-  assert.deepEqual(form.writes[0].value.sidebar.order, ['chat', MORE_ID, 'plugins', 'devices', 'unloaded']);
+  assert.deepEqual(form.writes[0].value.sidebar.order, ['chat', MORE_ID, 'plugins', 'devices', WORKSPACE_ID, 'unloaded']);
   assert.deepEqual(splitSidebar(rows, source.getSnapshot().preferences.sidebar).folded.map(row => row.id), ['plugins', 'devices']);
   form.settle(true);
   assert.equal(await saved, true);
@@ -148,9 +148,11 @@ test('moving a boundary across native plugin entries persists to a fresh control
   const restarted = createPreferencesController(fakeForm(persisted));
   const preference = restarted.getSnapshot().preferences.sidebar;
   assert.deepEqual(preference, next.sidebar);
-  const {visible, folded} = splitSidebar([...rows, {id: 'new-plugin', label: 'New'}], preference);
-  assert.deepEqual(visible.map(row => row.id), ['chat']);
-  assert.deepEqual(folded.map(row => row.id), ['plugins', 'devices', 'new-plugin']);
+  const {visible, folded, bottom} = splitSidebar([...rows, {id: 'new-plugin', label: 'New'}], preference);
+  // A newly registered row follows all explicitly saved positions, including workspaces.
+  assert.deepEqual(visible.map(row => row.id), ['chat', 'new-plugin']);
+  assert.deepEqual(bottom.map(row => row.id), ['new-plugin']);
+  assert.deepEqual(folded.map(row => row.id), ['plugins', 'devices']);
   assert.equal(folded[0].label, '扩展');
   assert.equal(folded[1], rows[2]);
   assert.equal(restarted.getSnapshot().preferences.settings.order.includes(MORE_ID), false);
@@ -221,6 +223,54 @@ test('workspace switches and pinned IDs roll back on failure and survive rapid w
   assert.deepEqual(reloaded.getSnapshot().preferences.workspace,off.workspace);
   assert.equal(reloaded.getSnapshot().preferences.sidebar.names.a,'Renamed');
   reloaded.dispose();
+});
+
+test('visibility survives host schema and restart while protected legacy hidden IDs are ignored', () => {
+  const initial = {sidebar: {order: ['a', MORE_ID, 'b', WORKSPACE_ID, footerId('settings')],
+    hidden: ['a', 'b', footerId('settings'), OWN_ID, MORE_ID, WORKSPACE_ID], names: {b: 'Bee'}},
+    settings: {order: ['models', OWN_ID], hidden: ['models', OWN_ID, MORE_ID, WORKSPACE_ID]}};
+  const parsed = Config({preferences: initial}).preferences.get();
+  const expected = normalize(initial);
+  const source = createPreferencesController(fakeForm(JSON.parse(JSON.stringify(parsed))));
+  assert.deepEqual(source.getSnapshot().preferences, expected);
+  assert.deepEqual(expected.sidebar.hidden, ['a', 'b', footerId('settings')]);
+  assert.deepEqual(navigationRows([{id: 'models'}, {id: OWN_ID}], expected.settings).map(row => row.id), [OWN_ID]);
+  assert.deepEqual(splitSidebar([{id: 'a'}, {id: 'b'}, {id: footerId('settings'), kind: 'footer'}], expected.sidebar).folded, []);
+  source.dispose();
+  for (const hidden of ['a', true, 1, {}, [1], ['a', {}]]) {
+    assert.throws(() => Config({preferences: {sidebar: {hidden}}}).preferences.get());
+  }
+});
+
+test('concurrent visibility saves preserve order, names and workspace; rejected latest save restores durable visibility', async () => {
+  const initial = normalize({sidebar: {order: ['a', MORE_ID, 'b'], names: {a: 'Alpha'}},
+    settings: {order: ['models', OWN_ID], names: {models: 'Models'}},
+    workspace: {dynamicSort: false, pinning: false, onlyPinned: true, pinnedWorkspaceIds: ['workspace']}});
+  const form = fakeForm(initial), source = createPreferencesController(form);
+  const first = setVisible(initial, 'sidebar', 'b', false);
+  const second = setVisible(first, 'settings', 'models', false);
+  const one = source.save(first), two = source.save(second);
+  assert.deepEqual(form.writes[1].value, second);
+  form.settle(true);
+  assert.equal(await one, true);
+  assert.deepEqual(source.getSnapshot().preferences, second);
+  form.settle(false);
+  assert.equal(await two, false);
+  assert.deepEqual(source.getSnapshot().preferences, first);
+  assert.equal(source.getSnapshot().status, 'error');
+  const retry = source.save(second);
+  form.settle(true);
+  assert.equal(await retry, true);
+  assert.deepEqual(source.getSnapshot().preferences.workspace, initial.workspace);
+  assert.deepEqual(source.getSnapshot().preferences.sidebar.order, initial.sidebar.order);
+  assert.deepEqual(source.getSnapshot().preferences.settings.names, initial.settings.names);
+  source.dispose();
+  const restarted = createPreferencesController(fakeForm(Config({preferences: form.getSnapshot().value.preferences}).preferences.get()));
+  assert.deepEqual(restarted.getSnapshot().preferences, second);
+  const restore = setVisible(restarted.getSnapshot().preferences, 'sidebar', 'b', true);
+  assert.equal(Object.hasOwn(restore.sidebar, 'hidden'), false);
+  assert.deepEqual(restore.settings.hidden, ['models']);
+  restarted.dispose();
 });
 
 test('rapid edits preserve latest optimistic state until the last settlement', async () => {
