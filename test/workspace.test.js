@@ -1,6 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {orderRecentWorkspaces, workspacePinMarkerCss, filterWorkspaceSessions, workspaceActivity, workspaceActivityCss} from '../src/workspace.js';
+import {orderRecentWorkspaces, workspacePinMarkerCss, filterWorkspaceSessions, workspaceActivity, workspaceActivityCss,
+  workspaceHostOrder, nextWorkspaceMove, createWorkspaceOrderSync} from '../src/workspace.js';
+import {setTimeout as wait} from 'node:timers/promises';
 test('workspace activity tracks running roots, live status overrides, pending interaction and children, not completion', () => {
   const workspace = {sessionIds: ['a', 'b']};
   const sessions = {byId: {a: {running: true}, b: {}}, projectionsBySession: {b: {values: {subagentCatalog: [{id: 'child'}]}}}};
@@ -156,4 +158,91 @@ test('ranking follows native archive visibility and ignores subagents and hidden
     assert.deepEqual(ids(orderRecentWorkspaces(snapshot,{byId:{...sessions.byId,a1:{updatedAt:100,...extra}}},view,true)),['b','a','empty']);
   }
   assert.equal(orderRecentWorkspaces(snapshot,{byId:{...sessions.byId,a1:{updatedAt:100,blank:true,retainedBy:{mainView:1}}}},view,true),snapshot);
+});
+
+const native = {...snapshot, state: 'idle'};
+const catalog = {...list, phase: 'ready'};
+
+test('Host sync ranks the full registry: pins first, then recency, regardless of only-pinned display', () => {
+  const pins = {pinning: true, pinnedWorkspaceIds: ['empty'], onlyPinned: true};
+  const plan = workspaceHostOrder(native, catalog, view, true, pins);
+  assert.deepEqual(plan.ids, ['empty', 'b', 'a']);
+  assert.deepEqual(ids(orderRecentWorkspaces(native, catalog, view, true, pins)), ['empty']);
+  assert.deepEqual(nextWorkspaceMove(native.items, plan.ids), ['empty', 'a']);
+  assert.equal(workspaceHostOrder({...native, state: 'loading'}, catalog, view, true, pins), null);
+  assert.equal(workspaceHostOrder(native, {...catalog, phase: 'pending'}, view, true, pins), null);
+  assert.equal(workspaceHostOrder(native, catalog, {...view, groupBy: 'flat'}, true, pins), null);
+  const manual = {...view, orderBy: 'manual'};
+  assert.deepEqual(workspaceHostOrder(native, catalog, manual, false, pins).ids, ['empty', 'a', 'b']);
+  assert.equal(workspaceHostOrder(native, catalog, manual, false, {...pins, pinnedWorkspaceIds: []}), null);
+});
+
+test('registry echoes and external manual moves do not schedule the same priority rule again', () => {
+  const pins = {pinning: true, pinnedWorkspaceIds: ['a', 'empty']};
+  const first = workspaceHostOrder(native, catalog, view, true, pins);
+  const external = {...native, items: [native.items[1], native.items[2], native.items[0]]};
+  const same = workspaceHostOrder(external, catalog, view, true, pins);
+  assert.equal(first.key, same.key);
+  assert.deepEqual(same.ids, ['empty', 'a', 'b'], 'tied rows follow current native order');
+  assert.notEqual(workspaceHostOrder(external, catalog, view, true, {...pins, pinnedWorkspaceIds: ['empty']}).key, same.key);
+  const updated = {...catalog, byId: {...catalog.byId, a1: {updatedAt: 100}}};
+  assert.notEqual(workspaceHostOrder(native, updated, view, true).key, workspaceHostOrder(native, catalog, view, true).key);
+});
+
+test('sync coalesces priorities, serializes native moves, and replans when the target changes mid-write', async t => {
+  let items = native.items.slice(), target = ['empty', 'b', 'a'];
+  let started, release, done;
+  const first = new Promise(resolve => { started = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const completed = new Promise(resolve => { done = resolve; });
+  const calls = [], errors = [];
+  const sync = createWorkspaceOrderSync({delay: 0,
+    readMove: () => nextWorkspaceMove(items, target),
+    onError: error => errors.push(error),
+    async move(id, anchor) {
+      calls.push([id, anchor]);
+      if (calls.length === 1) { started(); await gate; }
+      const moved = items.find(row => row.workspaceId === id);
+      items = items.filter(row => row !== moved);
+      items.splice(items.findIndex(row => row.workspaceId === anchor), 0, moved);
+      if (calls.length === 2) done();
+    },
+  });
+  t.after(() => sync.dispose());
+  sync.update('superseded');
+  sync.update('initial');
+  await first;
+  target = ['b', 'empty', 'a'];
+  sync.update('new ranking');
+  assert.deepEqual(calls, [['empty', 'a']]);
+  release();
+  await completed;
+  sync.update('new ranking');
+  await wait(5);
+  assert.deepEqual(calls, [['empty', 'a'], ['b', 'empty']]);
+  assert.deepEqual(items.map(row => row.workspaceId), target);
+  assert.deepEqual(errors, []);
+});
+
+test('sync reports failure once for a ranking and cancels work when disabled or disposed', async t => {
+  let moves = 0, errors = 0;
+  let failed;
+  const failure = new Promise(resolve => { failed = resolve; });
+  const sync = createWorkspaceOrderSync({delay: 0, readMove: () => ['b', 'a'],
+    move() { moves++; throw new Error('Host rejected move'); },
+    onError() { errors++; failed(); },
+  });
+  t.after(() => sync.dispose());
+  sync.update('ranking');
+  await failure;
+  sync.update('ranking');
+  await wait(5);
+  assert.deepEqual([moves, errors], [1, 1]);
+  sync.update('other');
+  sync.update(null);
+  await wait(5);
+  sync.update('last');
+  sync.dispose();
+  await wait(5);
+  assert.deepEqual([moves, errors], [1, 1]);
 });

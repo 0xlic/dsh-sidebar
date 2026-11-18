@@ -1,10 +1,10 @@
-// Presentation-only ordering: never writes the native workspace registry order.
-export function orderRecentWorkspaces(snapshot, sessions, view, enabled, pinOptions = {}) {
+// Ordering is pure. The display and Host sync use the same ranking rules.
+function rankWorkspaces(snapshot, sessions, view, enabled, pinOptions) {
   const dynamic = enabled && view?.groupBy === 'workspace' && view?.orderBy === 'updated';
   const pinned = new Set(pinOptions.pinning && view?.groupBy !== 'flat' ? pinOptions.pinnedWorkspaceIds || [] : []);
   const onlyPinned = pinOptions.onlyPinned === true && view?.groupBy === 'workspace';
   const visiblePins = new Set(pinOptions.pinnedWorkspaceIds || []);
-  if ((!dynamic && pinned.size === 0 && !onlyPinned) || !Array.isArray(snapshot?.items)) return snapshot;
+  if ((!dynamic && pinned.size === 0 && !onlyPinned) || !Array.isArray(snapshot?.items)) return null;
   const archived = new Set(snapshot.archivedSessionIds || []);
   const filter = view?.archivedFilter || 'default';
   const items = onlyPinned ? snapshot.items.filter(workspace => visiblePins.has(workspace.workspaceId)) : snapshot.items;
@@ -27,8 +27,85 @@ export function orderRecentWorkspaces(snapshot, sessions, view, enabled, pinOpti
     if (ap || !dynamic || a.updatedAt === b.updatedAt) return a.index - b.index;
     return a.updatedAt > b.updatedAt ? -1 : 1;
   });
-  if (ranked.length === snapshot.items.length && ranked.every((row, i) => row.workspace === snapshot.items[i])) return snapshot;
+  return ranked.map(row => ({...row, priority: pinned.has(row.workspace.workspaceId) ? Infinity : row.updatedAt}));
+}
+
+export function orderRecentWorkspaces(snapshot, sessions, view, enabled, pinOptions = {}) {
+  const ranked = rankWorkspaces(snapshot, sessions, view, enabled, pinOptions);
+  if (!ranked || (ranked.length === snapshot.items.length && ranked.every((row, i) => row.workspace === snapshot.items[i]))) return snapshot;
   return {...snapshot, items: ranked.map(row => row.workspace)};
+}
+
+export function workspaceHostOrder(snapshot, sessions, view, enabled, pinOptions = {}) {
+  const dynamic = enabled && view?.groupBy === 'workspace' && view?.orderBy === 'updated';
+  if (snapshot?.phase !== 'ready' || snapshot.state !== 'idle' || view?.groupBy === 'flat' ||
+      (dynamic && sessions?.phase !== 'ready')) return null;
+  const ranked = rankWorkspaces(snapshot, sessions, view, enabled, {...pinOptions, onlyPinned: false});
+  if (!ranked) return null;
+  // Ignore registry echoes and timestamp churn that doesn't change the ranking.
+  // Canonicalize equal-priority groups for the key only (not the actual order).
+  const groups = [];
+  for (const {workspace, priority} of ranked) {
+    if (groups.at(-1)?.priority !== priority) groups.push({priority, ids: []});
+    groups.at(-1).ids.push(workspace.workspaceId);
+  }
+  const key = JSON.stringify([dynamic, pinOptions.pinning, view?.groupBy, dynamic ? view?.archivedFilter : null,
+    groups.map(group => [group.priority === Infinity, group.ids.sort()])]);
+  return {key, ids: ranked.map(row => row.workspace.workspaceId)};
+}
+
+// Move the needed row before the first mismatch. Replan against native order
+// after each acknowledgment instead of assuming later anchors still exist.
+export function nextWorkspaceMove(items, ids) {
+  if (items.length !== ids.length) return null;
+  const i = items.findIndex((row, index) => row.workspaceId !== ids[index]);
+  if (i < 0 || !items.some(row => row.workspaceId === ids[i])) return null;
+  return [ids[i], items[i].workspaceId];
+}
+
+export function createWorkspaceOrderSync({readMove, move, onError, delay = 450}) {
+  let key = null, pending = false, disposed = false, running = false, timer;
+  const schedule = () => {
+    if (!disposed && pending && !running && timer === undefined) timer = setTimeout(flush, delay);
+  };
+  async function flush() {
+    timer = undefined;
+    if (disposed || !pending) return;
+    running = true;
+    pending = false;
+    const target = key;
+    try {
+      // Bound the work when other clients make concurrent edits.
+      const seen = new Set();
+      while (!disposed && target === key) {
+        const step = readMove(target);
+        if (!step) break;
+        const signature = JSON.stringify(step);
+        if (seen.has(signature)) throw new Error('Workspace order changed during sync');
+        seen.add(signature);
+        await move(...step);
+      }
+    } catch (error) {
+      if (!disposed && target === key) onError(error);
+    } finally {
+      running = false;
+      schedule();
+    }
+  }
+  return {
+    update(next) {
+      if (disposed || next === key) return;
+      key = next;
+      pending = next !== null;
+      clearTimeout(timer);
+      timer = undefined;
+      schedule();
+    },
+    dispose() {
+      disposed = true;
+      clearTimeout(timer);
+    },
+  };
 }
 
 // Native grouping puts sessions absent from the workspace projection into

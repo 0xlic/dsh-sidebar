@@ -223,13 +223,13 @@ function createPreferencesController(form, legacy = {}) {
   };
 }
 
-// Presentation-only ordering: never writes the native workspace registry order.
-function orderRecentWorkspaces(snapshot, sessions, view, enabled, pinOptions = {}) {
+// Ordering is pure. The display and Host sync use the same ranking rules.
+function rankWorkspaces(snapshot, sessions, view, enabled, pinOptions) {
   const dynamic = enabled && view?.groupBy === 'workspace' && view?.orderBy === 'updated';
   const pinned = new Set(pinOptions.pinning && view?.groupBy !== 'flat' ? pinOptions.pinnedWorkspaceIds || [] : []);
   const onlyPinned = pinOptions.onlyPinned === true && view?.groupBy === 'workspace';
   const visiblePins = new Set(pinOptions.pinnedWorkspaceIds || []);
-  if ((!dynamic && pinned.size === 0 && !onlyPinned) || !Array.isArray(snapshot?.items)) return snapshot;
+  if ((!dynamic && pinned.size === 0 && !onlyPinned) || !Array.isArray(snapshot?.items)) return null;
   const archived = new Set(snapshot.archivedSessionIds || []);
   const filter = view?.archivedFilter || 'default';
   const items = onlyPinned ? snapshot.items.filter(workspace => visiblePins.has(workspace.workspaceId)) : snapshot.items;
@@ -252,8 +252,85 @@ function orderRecentWorkspaces(snapshot, sessions, view, enabled, pinOptions = {
     if (ap || !dynamic || a.updatedAt === b.updatedAt) return a.index - b.index;
     return a.updatedAt > b.updatedAt ? -1 : 1;
   });
-  if (ranked.length === snapshot.items.length && ranked.every((row, i) => row.workspace === snapshot.items[i])) return snapshot;
+  return ranked.map(row => ({...row, priority: pinned.has(row.workspace.workspaceId) ? Infinity : row.updatedAt}));
+}
+
+function orderRecentWorkspaces(snapshot, sessions, view, enabled, pinOptions = {}) {
+  const ranked = rankWorkspaces(snapshot, sessions, view, enabled, pinOptions);
+  if (!ranked || (ranked.length === snapshot.items.length && ranked.every((row, i) => row.workspace === snapshot.items[i]))) return snapshot;
   return {...snapshot, items: ranked.map(row => row.workspace)};
+}
+
+function workspaceHostOrder(snapshot, sessions, view, enabled, pinOptions = {}) {
+  const dynamic = enabled && view?.groupBy === 'workspace' && view?.orderBy === 'updated';
+  if (snapshot?.phase !== 'ready' || snapshot.state !== 'idle' || view?.groupBy === 'flat' ||
+      (dynamic && sessions?.phase !== 'ready')) return null;
+  const ranked = rankWorkspaces(snapshot, sessions, view, enabled, {...pinOptions, onlyPinned: false});
+  if (!ranked) return null;
+  // Ignore registry echoes and timestamp churn that doesn't change the ranking.
+  // Canonicalize equal-priority groups for the key only (not the actual order).
+  const groups = [];
+  for (const {workspace, priority} of ranked) {
+    if (groups.at(-1)?.priority !== priority) groups.push({priority, ids: []});
+    groups.at(-1).ids.push(workspace.workspaceId);
+  }
+  const key = JSON.stringify([dynamic, pinOptions.pinning, view?.groupBy, dynamic ? view?.archivedFilter : null,
+    groups.map(group => [group.priority === Infinity, group.ids.sort()])]);
+  return {key, ids: ranked.map(row => row.workspace.workspaceId)};
+}
+
+// Move the needed row before the first mismatch. Replan against native order
+// after each acknowledgment instead of assuming later anchors still exist.
+function nextWorkspaceMove(items, ids) {
+  if (items.length !== ids.length) return null;
+  const i = items.findIndex((row, index) => row.workspaceId !== ids[index]);
+  if (i < 0 || !items.some(row => row.workspaceId === ids[i])) return null;
+  return [ids[i], items[i].workspaceId];
+}
+
+function createWorkspaceOrderSync({readMove, move, onError, delay = 450}) {
+  let key = null, pending = false, disposed = false, running = false, timer;
+  const schedule = () => {
+    if (!disposed && pending && !running && timer === undefined) timer = setTimeout(flush, delay);
+  };
+  async function flush() {
+    timer = undefined;
+    if (disposed || !pending) return;
+    running = true;
+    pending = false;
+    const target = key;
+    try {
+      // Bound the work when other clients make concurrent edits.
+      const seen = new Set();
+      while (!disposed && target === key) {
+        const step = readMove(target);
+        if (!step) break;
+        const signature = JSON.stringify(step);
+        if (seen.has(signature)) throw new Error('Workspace order changed during sync');
+        seen.add(signature);
+        await move(...step);
+      }
+    } catch (error) {
+      if (!disposed && target === key) onError(error);
+    } finally {
+      running = false;
+      schedule();
+    }
+  }
+  return {
+    update(next) {
+      if (disposed || next === key) return;
+      key = next;
+      pending = next !== null;
+      clearTimeout(timer);
+      timer = undefined;
+      schedule();
+    },
+    dispose() {
+      disposed = true;
+      clearTimeout(timer);
+    },
+  };
 }
 
 // Native grouping puts sessions absent from the workspace projection into
@@ -507,12 +584,13 @@ const dicts = {
     workspace: '工作区设置', pinWorkspace: '置顶工作区',
     activeIndicator: '活跃工作区标识', activeIndicatorHint: '工作区有运行中或等待交互的会话时，在右侧显示会话同款圆圈；悬停时隐藏，固定图标位于其右侧。',
     activityOngoing: '工作区有运行中的会话', activityWarning: '工作区有等待交互的会话',
-    pinHint: '悬停工作区后，点击右侧图钉切换置顶，优先于动态排序。',
+    pinHint: '悬停工作区，点击右侧图钉切换置顶。置顶优先；DSH 界面保持打开且有写入权限时，顺序同步到 Host，图钉不同步。',
     pinAction: '置顶工作区', unpinAction: '取消置顶工作区', pinFailed: '工作区置顶设置保存失败，请重试。',
     collapseOneClick: '工作区一键折叠', collapseOneClickHint: '在「工作区」右侧显示一键折叠按钮；关闭后隐藏按钮，视图选项中的折叠动作也不可用。',
     collapseAll: '折叠所有工作区',
     filterWorkspaces: '筛选工作区', onlyPinned: '仅显示固定工作区', filterFailed: '工作区筛选设置保存失败，请重试。',
-    dynamicSort: '动态调整工作区排序', dynamicSortHint: '仅在「按工作区」和「最近更新」时生效，最近有会话更新的工作区排在最前。',
+    dynamicSort: '动态调整工作区排序', dynamicSortHint: '仅在「按工作区」和「最近更新」时生效。DSH 界面保持打开且有写入权限时，顺序同步到 Host；关闭后不恢复旧顺序。',
+    workspaceSyncFailed: '未能完成工作区顺序同步。移动端顺序可能与此处不同；请检查连接后刷新 DSH 重试。',
     empty: '当前没有可调整的导航项目。', compatibility: '部分导航接口不兼容，相关导航已保留原样。',
   },
   en: {
@@ -530,12 +608,13 @@ const dicts = {
     workspace: 'Workspace settings', pinWorkspace: 'Pin workspaces',
     activeIndicator: 'Active workspace indicator', activeIndicatorHint: 'Show the session status circle on the right when sessions are running or awaiting interaction. Hidden on hover, before the pin marker.',
     activityOngoing: 'Workspace has running sessions', activityWarning: 'Workspace has sessions awaiting interaction',
-    pinHint: 'Hover a workspace and click its rightmost pin to toggle pinning, ahead of dynamic sorting.',
+    pinHint: 'Hover a workspace and click the pin to toggle it. Pins take priority. A writable, open sidebar syncs the order to the Host, not the pin icon.',
     pinAction: 'Pin workspace', unpinAction: 'Unpin workspace', pinFailed: 'Could not save workspace pinning. Please retry.',
     collapseOneClick: 'One-click workspace collapse', collapseOneClickHint: 'Show the collapse-all button beside Search; when off, the button is hidden and the view-menu action is unavailable.',
     collapseAll: 'Collapse all workspaces',
     filterWorkspaces: 'Filter workspaces', onlyPinned: 'Only show pinned workspaces', filterFailed: 'Could not save workspace filtering. Please retry.',
-    dynamicSort: 'Dynamically reorder workspaces', dynamicSortHint: 'Only with By workspace and Recently updated: workspaces with the most recently updated sessions come first.',
+    dynamicSort: 'Dynamically reorder workspaces', dynamicSortHint: 'Applies in By workspace and Recently updated. A writable, open sidebar syncs the order to the Host. Turning sorting off does not restore the old order.',
+    workspaceSyncFailed: 'Could not finish syncing workspace order. Mobile clients may show a different order. Check your connection, then refresh DSH to retry.',
     empty: 'No navigation entries are available.', compatibility: 'Some navigation APIs are incompatible. Affected navigation was left unchanged.',
   },
 };
@@ -579,6 +658,21 @@ return {
     const save = next => source.save(next);
     let live = true;
     ctx.effect(() => () => { live = false; source.dispose(); });
+    // Only the sync feature depends on this Client service. Keep the sidebar
+    // usable before the provider starts and in profiles without the provider.
+    let workspaceService;
+    ctx.inject(['workspaces'], scoped => {
+      const service = scoped.workspaces;
+      scoped.effect(() => {
+        workspaceService = service;
+        source.refresh();
+        return () => {
+          if (workspaceService !== service) return;
+          workspaceService = undefined;
+          source.refresh();
+        };
+      });
+    });
     async function toggleWorkspacePin(workspaceId) {
       const current = source.getSnapshot();
       const workspace = current.preferences.workspace || {};
@@ -839,6 +933,44 @@ return {
         [snapshot, byId, groupBy, orderBy, archivedFilter, active, pinning, pinnedWorkspaceIds, onlyPinned]);
       const filtering = onlyPinned && groupBy === 'workspace';
       const sessionSnapshot = props.useSessions(identity);
+      const {writable, status: preferencesStatus} = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
+      const workspaces = workspaceService;
+      const canSync = typeof workspaces?.insertBefore === 'function' && typeof workspaces?.list?.getSnapshot === 'function';
+      const writer = React.useRef(null);
+      const readMove = React.useRef(null);
+      const syncKey = React.useMemo(() => canSync && writable && ['saved', 'error'].includes(preferencesStatus)
+        ? workspaceHostOrder(snapshot, sessionSnapshot, {groupBy, orderBy, archivedFilter}, active,
+          {pinning, pinnedWorkspaceIds})?.key ?? null : null,
+      [canSync, writable, preferencesStatus, snapshot, sessionSnapshot, groupBy, orderBy, archivedFilter, active, pinning, pinnedWorkspaceIds]);
+      React.useEffect(() => {
+        if (!canSync) return;
+        let lastError = -Infinity;
+        const sync = createWorkspaceOrderSync({
+          readMove: key => readMove.current?.(key),
+          move: (id, before) => workspaces.insertBefore(id, before),
+          onError: () => {
+            if (live && Date.now() - lastError >= 30_000) {
+              lastError = Date.now();
+              ctx.contextMenus.notify(t('workspaceSyncFailed'), false);
+            }
+          },
+        });
+        writer.current = sync;
+        return () => { sync.dispose(); writer.current = null; };
+      }, [workspaces, canSync]);
+      React.useEffect(() => {
+        readMove.current = syncKey === null ? null : key => {
+          const confirmed = source.getSnapshot();
+          if (!live || !['saved', 'error'].includes(confirmed.status) || !confirmed.writable) return null;
+          const prefs = confirmed.preferences.workspace;
+          const current = workspaces.list.getSnapshot();
+          const plan = workspaceHostOrder(current, sessionSnapshot, {groupBy, orderBy, archivedFilter},
+            active && prefs?.dynamicSort !== false, {pinning: pinning && prefs?.pinning !== false,
+              pinnedWorkspaceIds: prefs?.pinnedWorkspaceIds || EMPTY_WORKSPACE_PINS});
+          return plan?.key === key ? nextWorkspaceMove(current.items, plan.ids) : null;
+        };
+        writer.current?.update(syncKey);
+      }, [workspaces, syncKey, sessionSnapshot, groupBy, orderBy, archivedFilter, active, pinning, pinnedWorkspaceIds]);
       const statuses = typeof props.useSessionStatus === 'function' ? props.useSessionStatus(identity) : null;
       const activityByWorkspace = React.useMemo(() => new Map(activeIndicator ? snapshot.items.map(workspace =>
         [workspace.workspaceId, workspaceActivity(workspace, sessionSnapshot, statuses, snapshot.archivedSessionIds, archivedFilter)]) : []),
@@ -852,7 +984,6 @@ return {
         return selector(visibleSessions);
       } : props.useSessions;
       const menuTarget = React.useSyncExternalStore(ctx.contextMenus.active.subscribe, ctx.contextMenus.active.getSnapshot);
-      const {writable} = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
       React.useSyncExternalStore(subscribeLocale, getLocaleSnapshot);
       const openWorkspaceId = menuTarget?.kind === 'workspace' ? menuTarget.value.workspaceId : null;
       const useWorkspaces = selector => selector(projected);

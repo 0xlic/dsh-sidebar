@@ -78,7 +78,7 @@ function runtime(preferences = normalize(null), storage = {getItem: () => null, 
   ]);
   vm.runInNewContext(source, {
     window: {__ModuleLoader__: {load: value => { injected = value.factory(id => id === 'react' ? React : {StateDot: 'NativeStateDot'}); }}},
-    localStorage: storage,
+    localStorage: storage, setTimeout, clearTimeout,
   });
   let config = {status: 'ready', writable: true, value: {preferences}};
   const configSubscribers = new Set(), writes = [];
@@ -112,6 +112,12 @@ function runtime(preferences = normalize(null), storage = {getItem: () => null, 
       register(options, component) { const rows = slots.get(options.name) || []; rows.push({options, component}); slots.set(options.name, rows); },
     },
   };
+  let activateWorkspaces;
+  ctx.inject = (deps, activate) => {
+    assert.deepEqual(Array.from(deps), ['workspaces']);
+    activateWorkspaces = service => activate({workspaces: service, effect: fn => fn()});
+  };
+  Object.defineProperty(ctx, 'workspaces', {get() { throw new Error('cannot get property "workspaces" without inject'); }});
   injected.apply(ctx);
   const iconCalls = [], slotCalls = [];
   const nativeFallbacks = new Map(['general', 'plugins', 'dsh-sidebar'].map(id => [id, h('NativeFallback', {id})]));
@@ -150,7 +156,7 @@ function runtime(preferences = normalize(null), storage = {getItem: () => null, 
     slots.set(name, entries); versions.set(name, (versions.get(name) || 0) + 1);
     for (const fn of subscribers.get(name) || []) fn();
   };
-  return {publishSlot, subscribers, NativeFooter, shell, Shell, settings, Settings, browser, Browser, slots, props, cleanups, form, nativeIcon, nativeMore, nativeFooter, page, iconCalls, slotCalls, nativeFallbacks, writes, menuContributions, menuActive, notifications, locale: ctx.locale};
+  return {activateWorkspaces, publishSlot, subscribers, NativeFooter, shell, Shell, settings, Settings, browser, Browser, slots, props, cleanups, form, nativeIcon, nativeMore, nativeFooter, page, iconCalls, slotCalls, nativeFallbacks, writes, menuContributions, menuActive, notifications, locale: ctx.locale};
 }
 
 function findElement(tree, predicate) {
@@ -586,6 +592,40 @@ test('workspace adapter changes only projected item order and restores original 
   assert.equal(project().props.useWorkspaces(x=>x),snapshot,'turning dynamic sorting off restores the native snapshot');
   for(const cleanup of env.cleanups.reverse()) cleanup();
   assert.equal(env.browser.component,env.Browser);
+});
+
+test('built workspace adapter syncs the complete order through the native Workspace service', {timeout: 3000}, async t => {
+  const env = runtime({workspace: Object.assign(Object.create(null), {pinnedWorkspaceIds: ['c'], onlyPinned: true})});
+  let snapshot = {phase: 'ready', state: 'idle', items: ['a', 'b', 'c'].map(workspaceId => ({workspaceId, sessionIds: [workspaceId]}))};
+  let complete;
+  const synced = new Promise(resolve => { complete = resolve; });
+  const moves = [];
+  const deactivate = env.activateWorkspaces({
+    list: {getSnapshot: () => snapshot},
+    async insertBefore(id, anchor) {
+      moves.push([id, anchor]);
+      const items = snapshot.items.filter(row => row.workspaceId !== id);
+      items.splice(items.findIndex(row => row.workspaceId === anchor), 0, snapshot.items.find(row => row.workspaceId === id));
+      snapshot = {...snapshot, items};
+      if (moves.length === 2) complete();
+    },
+  });
+  t.after(deactivate);
+  const sessionSnapshot = {phase: 'ready', byId: {a: {updatedAt: 10}, b: {updatedAt: 20}, c: {updatedAt: 1}}};
+  const bridge = env.browser.component({useWorkspaces: selector => selector(snapshot),
+    useSessions: selector => selector(sessionSnapshot), useStore: selector => selector({groupBy: 'workspace', orderBy: 'updated'})});
+  const selectedEffects = [], cleanups = [];
+  const originalEffect = React.useEffect;
+  React.useEffect = fn => selectedEffects.push(fn);
+  let projected;
+  try { projected = bridge.type(bridge.props); } finally { React.useEffect = originalEffect; }
+  t.after(() => { for (const cleanup of cleanups.reverse()) cleanup(); });
+  for (const fn of selectedEffects) { const dispose = fn(); if (dispose) cleanups.push(dispose); }
+  assert.deepEqual(Array.from(projected.props.useWorkspaces(s => s.items), row => row.workspaceId), ['c']);
+  await synced;
+  assert.deepEqual(moves, [['c', 'a'], ['b', 'a']]);
+  assert.deepEqual(snapshot.items.map(row => row.workspaceId), ['c', 'b', 'a']);
+  assert.deepEqual(env.writes, []);
 });
 
 test('workspace and filter menu preserve LocaleRuntime receiver for snapshot, subscribe and cleanup', () => {
