@@ -97,6 +97,14 @@ export function normalize(value) {
       ...(Object.keys(names).length ? {names} : {}),
     };
   }
+  const rightSidebar = value?.rightSidebar;
+  if (rightSidebar && typeof rightSidebar === 'object' &&
+      (Object.getPrototypeOf(rightSidebar) === Object.prototype || Object.getPrototypeOf(rightSidebar) === null)) {
+    out.rightSidebar = {
+      showHidden: rightSidebar.showHidden !== false,
+      sendFileToConversation: rightSidebar.sendFileToConversation !== false,
+    };
+  }
   const workspace = value?.workspace;
   if (workspace !== null && typeof workspace === 'object' &&
       (Object.getPrototypeOf(workspace) === Object.prototype || Object.getPrototypeOf(workspace) === null)) {

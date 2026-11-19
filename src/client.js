@@ -8,7 +8,7 @@ const EMPTY_WORKSPACE_PINS = Object.freeze([]);
 function readPanelState() {
   let saved;
   try { saved = JSON.parse(localStorage.getItem(PANELS_KEY) || 'null'); } catch { /* Storage may be unavailable. */ }
-  return Object.fromEntries([...GROUPS, 'workspace'].map((group, index) => [group,
+  return Object.fromEntries([...GROUPS, 'workspace', 'rightSidebar'].map((group, index) => [group,
     typeof saved?.[group] === 'boolean' ? saved[group] : index === 0]));
 }
 const dicts = {
@@ -24,6 +24,11 @@ const dicts = {
     folded: '已收入更多', moreBoundary: '收纳分界线', workspaceBoundary: '工作区', workspaceBoundaryHint: '工作区分割项',
     bottomEntry: '显示在工作区下方', actionEntry: '插件动作', pinMenu: '移出更多',
     layoutHint: '「工作区」上方显示功能入口，下方显示底部菜单。「更多」收纳其后至工作区分割项之前的菜单；更多在工作区下方时，收纳其后的菜单。两个分割项均可拖动。',
+    rightSidebar: '右侧边栏', showHidden: '显示隐藏文件',
+    showHiddenHint: '打开右侧「文件」时默认显示隐藏文件和目录。仍可用搜索栏的眼睛按钮单独调整当前工作区。',
+    referenceFile: '发送到会话', referenceAdded: '已添加到会话输入框，尚未发送。',
+    sendFileToConversation: '发送文件到会话', sendFileToConversationHint: '在文件右键菜单中显示此操作。文件引用会加入当前会话的输入框，不会自动发送。',
+    referenceFailed: '无法添加文件引用，请确认当前会话可以编辑。',
     workspace: '工作区设置', pinWorkspace: '置顶工作区',
     activeIndicator: '活跃工作区标识', activeIndicatorHint: '工作区有运行中或等待交互的会话时，在右侧显示会话同款圆圈；悬停时隐藏，固定图标位于其右侧。',
     activityOngoing: '工作区有运行中的会话', activityWarning: '工作区有等待交互的会话',
@@ -54,6 +59,11 @@ const dicts = {
     folded: 'Inside More', moreBoundary: 'Folding boundary', workspaceBoundary: 'Workspaces', workspaceBoundaryHint: 'Workspace boundary',
     bottomEntry: 'Below workspaces', actionEntry: 'Plugin action', pinMenu: 'Move out of More',
     layoutHint: 'Entries above Workspaces appear at the top; entries below appear at the bottom. More folds the following entries up to Workspaces, or all following entries when More is below Workspaces. Drag either boundary to adjust.',
+    rightSidebar: 'Right sidebar', showHidden: 'Show hidden files',
+    showHiddenHint: 'Show hidden files and folders by default when you open Files. The eye button in the search bar still lets you adjust the current workspace.',
+    referenceFile: 'Send to conversation', referenceAdded: 'Added to the conversation draft. Not sent.',
+    sendFileToConversation: 'Send files to conversation', sendFileToConversationHint: 'Show this action in the file context menu. It adds a file reference to the current conversation’s draft without sending it.',
+    referenceFailed: 'Could not add the file reference. Check that the current conversation is editable.',
     workspace: 'Workspace settings', pinWorkspace: 'Pin workspaces',
     activeIndicator: 'Active workspace indicator', activeIndicatorHint: 'Show the session status circle on the right when sessions are running or awaiting interaction. Hidden on hover, before the pin marker.',
     activityOngoing: 'Workspace has running sessions', activityWarning: 'Workspace has sessions awaiting interaction',
@@ -116,6 +126,16 @@ return {
     ctx.inject(['workspaces', 'sessions', 'uiWorkspace', 'remoteAccess'], scoped => {
       scoped.effect(() => registerWorkspaceArchiveMenu(scoped, t, source));
     });
+    ctx.slots.inject('contextMenu.icon', () => ctx.slots.register({
+      name: 'contextMenu.icon', key: FILE_REFERENCE_ICON,
+    }, () => h('svg', {width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
+      strokeWidth: 1.2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false},
+      h('circle', {cx: 8, cy: 8, r: 2.5}),
+      h('path', {d: 'M10.5 5.5v4a1.75 1.75 0 0 0 3.5 0V8a6 6 0 1 0-2.2 4.65'}))));
+    ctx.inject(['conversation', 'sessions', 'uiSession', 'layout'], scoped => {
+      scoped.effect(() => registerFileReferenceMenu(scoped, t, source));
+    });
+    ctx.effect(() => registerHiddenFilesDefault(ctx.slots, React, source, createHiddenDefaultController(() => localStorage)));
     // Keep workspace ordering usable before the provider starts and in
     // profiles without the provider.
     let workspaceService;
@@ -826,7 +846,30 @@ return {
                   const current = source.getSnapshot().preferences;
                   const enabled = current.workspace?.dynamicSort !== false;
                   void save({...current, workspace: {...current.workspace, dynamicSort: !enabled}});
-                }}, h('span', {'aria-hidden': true}))))));
+                }}, h('span', {'aria-hidden': true}))))),
+        h('section', {className: 'dshsb-card', 'aria-label': t('rightSidebar')},
+          h('div', {className: 'dshsb-head'}, h('h3', null,
+            h('button', {type: 'button', className: 'dshsb-disclosure',
+              id: `${panelId}-right-sidebar-toggle`, 'aria-expanded': expanded.rightSidebar,
+              'aria-controls': `${panelId}-right-sidebar`, onClick: () => togglePanel('rightSidebar')},
+              h('span', {className: 'dshsb-chevron', 'aria-hidden': true}, '▶'), t('rightSidebar')))),
+          h('div', {className: 'dshsb-panel', id: `${panelId}-right-sidebar`, hidden: !expanded.rightSidebar,
+            role: 'region', 'aria-labelledby': `${panelId}-right-sidebar-toggle`},
+            ...['showHidden', 'sendFileToConversation'].map(field => {
+              const id = `${panelId}-${field}`;
+              return h('div', {key: field, className: 'dshsb-row'},
+                h('div', {className: 'dshsb-setting-copy'},
+                  h('span', {id: `${id}-label`}, t(field)),
+                  h('span', {className: 'dshsb-setting-hint', id: `${id}-hint`}, t(`${field}Hint`))),
+                h('button', {type: 'button', className: 'dshsb-switch', role: 'switch', disabled: !writable,
+                  'aria-checked': state.rightSidebar?.[field] !== false,
+                  'aria-labelledby': `${id}-label`, 'aria-describedby': `${id}-hint`,
+                  onClick: () => {
+                    const {preferences: current, writable: canSave} = source.getSnapshot();
+                    if (!canSave) return;
+                    void save({...current, rightSidebar: {...current.rightSidebar, [field]: current.rightSidebar?.[field] === false}});
+                  }}, h('span', {'aria-hidden': true})));
+            }))));
     }
     ctx.slots.inject('settings.section.icon', () => ctx.slots.register({
       name: 'settings.section.icon', id: OWN_ID,

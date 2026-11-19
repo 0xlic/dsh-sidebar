@@ -99,6 +99,14 @@ function normalize(value) {
       ...(Object.keys(names).length ? {names} : {}),
     };
   }
+  const rightSidebar = value?.rightSidebar;
+  if (rightSidebar && typeof rightSidebar === 'object' &&
+      (Object.getPrototypeOf(rightSidebar) === Object.prototype || Object.getPrototypeOf(rightSidebar) === null)) {
+    out.rightSidebar = {
+      showHidden: rightSidebar.showHidden !== false,
+      sendFileToConversation: rightSidebar.sendFileToConversation !== false,
+    };
+  }
   const workspace = value?.workspace;
   if (workspace !== null && typeof workspace === 'object' &&
       (Object.getPrototypeOf(workspace) === Object.prototype || Object.getPrototypeOf(workspace) === null)) {
@@ -628,6 +636,155 @@ function projectActionLabel(React, tree, original, label) {
   return adapt(tree);
 }
 
+// The stock file navigator supplies the absolute path and the pane id.
+// Check containment before creating a reference; no file is read by this action.
+function workspaceFileReference(cwd, absolutePath) {
+  if (typeof cwd !== 'string' || typeof absolutePath !== 'string') return null;
+  const windows = /^[a-z]:[/\\]|^(?:\\\\|\/\/)[^/\\]+[/\\][^/\\]+/i.test(cwd);
+  const normalizePath = path => windows ? path.replace(/\\/g, '/') : path;
+  const root = normalizePath(cwd).replace(/\/+$/, '');
+  const path = normalizePath(absolutePath);
+  if (!cwd.startsWith('/') && !windows) return null;
+  const prefix = `${root}/`;
+  if (!(windows ? path.toLowerCase().startsWith(prefix.toLowerCase()) : path.startsWith(prefix))) return null;
+  const relative = path.slice(prefix.length);
+  const segments = relative.split('/');
+  // Match DSH's @file grammar: quoted whitespace, no escapes for quotes or controls.
+  if (segments.some(part => !part || part === '.' || part === '..') || /[\u0000-\u001f\u007f-\u009f"]/u.test(relative)) return null;
+  const mention = /\s/u.test(relative) ? `@"${relative}"` : `@${relative}`;
+  return {source: 'reference', ref: mention, label: segments.at(-1), appearance: 'file', clipboardText: mention};
+}
+
+const FILE_REFERENCE_ICON = 'dsh-sidebar.file-reference';
+
+function registerFileReferenceMenu({contextMenus, conversation, sessions, uiSession, layout}, t, preferences) {
+  const current = uiSession.adapter.current;
+  const enabled = () => preferences.getSnapshot().preferences.rightSidebar?.sendFileToConversation !== false;
+  let live = true;
+  function resolveTarget({sessionId, path, paneId}) {
+    if (!paneId || !sessionId || current.getSnapshot().key !== sessionId ||
+        layout.panelInfo.getSnapshot().activePanelId !== null) return null;
+    const ref = workspaceFileReference(sessions.list.getSnapshot().byId[sessionId]?.cwd, path);
+    const binding = ref && sessions.binding(sessionId);
+    return binding ? {ref, binding} : null;
+  }
+  const unregister = contextMenus.register({
+    id: 'dsh-sidebar.reference-workspace-file', target: 'file', order: 160,
+    observe: () => [current, layout.panelInfo, sessions.list, preferences],
+    resolve(target) {
+      if (!enabled() || !resolveTarget(target)) return [];
+      return [{
+        id: 'reference-file', label: t('referenceFile'), icon: {key: FILE_REFERENCE_ICON}, failureLabel: t('referenceFailed'),
+        run() {
+          if (!live || !enabled()) return;
+          const resolved = resolveTarget(target);
+          if (!resolved) throw new Error('File no longer belongs to the current conversation');
+          const input = conversation.input.for(resolved.binding.ctx);
+          // rc.5's native file-intake adapter inserts an atomic chip after the
+          // selection, with separators. It never replaces selected text or submits.
+          if (typeof input.addFiles !== 'function' || !input.addFiles([resolved.ref], [])) {
+            throw new Error('The current input did not accept the file reference');
+          }
+          contextMenus.notify(t('referenceAdded'), true);
+        },
+      }];
+    },
+  });
+  return () => { live = false; unregister(); };
+}
+
+// Native storage omits false (its built-in default). Track only the workspaces
+// we initialized so turning the plugin switch off can undo our own changes
+// without removing the user's existing eye choices or touching other settings.
+function hiddenFileDefault(marker, nativeValue, enabled) {
+  if (marker === 'manual') return null;
+  if (marker === 'managed') {
+    if (!nativeValue) return {marker: 'manual'};
+    return enabled ? null : {marker: null, showHidden: false};
+  }
+  if (nativeValue) return {marker: 'manual'};
+  return enabled ? {marker: 'managed', showHidden: true} : null;
+}
+
+function createHiddenDefaultController(storage) {
+  const key = 'dsh-sidebar.hidden-defaults.v1';
+  const pending = new Set();
+  return (cwd, nativeValue, enabled, setSearchPreferences) => {
+    if (typeof cwd !== 'string' || !cwd || typeof nativeValue !== 'boolean' || typeof enabled !== 'boolean') return;
+    // Match the native search book's workspace key, including drive roots.
+    const trimmed = cwd.replace(/[/\\]+$/, '');
+    const root = trimmed === '' ? cwd.slice(0, 1)
+      : /^[a-z]:$/i.test(trimmed) && trimmed.length < cwd.length ? cwd.slice(0, 3) : trimmed;
+    if (pending.has(root)) return; // Another occurrence may still hold the pre-write snapshot.
+    let store, raw;
+    try { store = storage(); raw = store.getItem(key); }
+    catch { return; } // Do not change the native default if we cannot track ownership.
+    let entries = {};
+    try {
+      const parsed = JSON.parse(raw || 'null');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) entries = parsed;
+    } catch { /* Recover from malformed plugin-local data. */ }
+    const marker = Object.hasOwn(entries, root) ? entries[root] : null;
+    const change = hiddenFileDefault(marker, nativeValue, enabled);
+    if (!change) return;
+    const next = {...entries, [root]: change.marker};
+    if (change.marker === null) delete next[root];
+    try { store.setItem(key, JSON.stringify(next)); }
+    catch { return; }
+    if (typeof change.showHidden === 'boolean') {
+      pending.add(root);
+      queueMicrotask(() => pending.delete(root));
+      try { setSearchPreferences(cwd, {showHidden: change.showHidden}); }
+      catch { try { store.setItem(key, JSON.stringify(entries)); } catch { /* Storage became unavailable. */ } }
+    }
+  };
+}
+
+// The primary native Files page is a keyed slot entry. Keep its registry
+// identity and all its native hooks, renderer, store, commands and children.
+function registerHiddenFilesDefault(slots, React, source, applyDefault) {
+  const slot = 'sidebar.right.pane.tab';
+  const key = '@deepseek-ai/dsh-client-ui-sidebar-files';
+  const patches = new Map();
+  let active = true;
+  const sync = () => {
+    const entries = new Set(slots.entriesOfSlot(slot).filter(entry => entry.options.key === key));
+    for (const [entry, restore] of patches) if (!entries.has(entry)) { restore(); patches.delete(entry); }
+    for (const entry of entries) {
+      if (patches.has(entry) || typeof entry.component !== 'function') continue;
+      const Native = entry.component;
+      function DefaultFilesBody(props) {
+        if (!active || ![props.useSessions, props.useSearchPreferences, props.setSearchPreferences].every(fn => typeof fn === 'function')) {
+          return React.createElement(Native, props);
+        }
+        return React.createElement(FilesWithDefault, props);
+      }
+      function FilesWithDefault(props) {
+        const {sessionId, useSessions, useSearchPreferences, setSearchPreferences} = props;
+        const cwd = useSessions(snapshot => snapshot.byId[sessionId]?.cwd);
+        const nativeValue = useSearchPreferences(cwd ?? '')?.showHidden;
+        const state = React.useSyncExternalStore(source.subscribe, source.getSnapshot);
+        const enabled = state.status === 'loading' || state.status === 'unavailable'
+          ? undefined : state.preferences.rightSidebar?.showHidden !== false;
+        React.useEffect(() => {
+          if (active) applyDefault(cwd, nativeValue, enabled, setSearchPreferences);
+        }, [cwd, nativeValue, enabled, setSearchPreferences]);
+        return React.createElement(Native, props);
+      }
+      entry.component = DefaultFilesBody;
+      patches.set(entry, () => { if (entry.component === DefaultFilesBody) entry.component = Native; });
+    }
+  };
+  const unsubscribe = slots.subscribe(slot, sync);
+  sync();
+  return () => {
+    active = false;
+    unsubscribe();
+    for (const restore of patches.values()) restore();
+    patches.clear();
+  };
+}
+
 const React = require('react');
 const h = React.createElement;
 const {StateDot} = require('@deepseek-ai/dsh-client-ui-primitives');
@@ -638,7 +795,7 @@ const EMPTY_WORKSPACE_PINS = Object.freeze([]);
 function readPanelState() {
   let saved;
   try { saved = JSON.parse(localStorage.getItem(PANELS_KEY) || 'null'); } catch { /* Storage may be unavailable. */ }
-  return Object.fromEntries([...GROUPS, 'workspace'].map((group, index) => [group,
+  return Object.fromEntries([...GROUPS, 'workspace', 'rightSidebar'].map((group, index) => [group,
     typeof saved?.[group] === 'boolean' ? saved[group] : index === 0]));
 }
 const dicts = {
@@ -654,6 +811,11 @@ const dicts = {
     folded: '已收入更多', moreBoundary: '收纳分界线', workspaceBoundary: '工作区', workspaceBoundaryHint: '工作区分割项',
     bottomEntry: '显示在工作区下方', actionEntry: '插件动作', pinMenu: '移出更多',
     layoutHint: '「工作区」上方显示功能入口，下方显示底部菜单。「更多」收纳其后至工作区分割项之前的菜单；更多在工作区下方时，收纳其后的菜单。两个分割项均可拖动。',
+    rightSidebar: '右侧边栏', showHidden: '显示隐藏文件',
+    showHiddenHint: '打开右侧「文件」时默认显示隐藏文件和目录。仍可用搜索栏的眼睛按钮单独调整当前工作区。',
+    referenceFile: '发送到会话', referenceAdded: '已添加到会话输入框，尚未发送。',
+    sendFileToConversation: '发送文件到会话', sendFileToConversationHint: '在文件右键菜单中显示此操作。文件引用会加入当前会话的输入框，不会自动发送。',
+    referenceFailed: '无法添加文件引用，请确认当前会话可以编辑。',
     workspace: '工作区设置', pinWorkspace: '置顶工作区',
     activeIndicator: '活跃工作区标识', activeIndicatorHint: '工作区有运行中或等待交互的会话时，在右侧显示会话同款圆圈；悬停时隐藏，固定图标位于其右侧。',
     activityOngoing: '工作区有运行中的会话', activityWarning: '工作区有等待交互的会话',
@@ -684,6 +846,11 @@ const dicts = {
     folded: 'Inside More', moreBoundary: 'Folding boundary', workspaceBoundary: 'Workspaces', workspaceBoundaryHint: 'Workspace boundary',
     bottomEntry: 'Below workspaces', actionEntry: 'Plugin action', pinMenu: 'Move out of More',
     layoutHint: 'Entries above Workspaces appear at the top; entries below appear at the bottom. More folds the following entries up to Workspaces, or all following entries when More is below Workspaces. Drag either boundary to adjust.',
+    rightSidebar: 'Right sidebar', showHidden: 'Show hidden files',
+    showHiddenHint: 'Show hidden files and folders by default when you open Files. The eye button in the search bar still lets you adjust the current workspace.',
+    referenceFile: 'Send to conversation', referenceAdded: 'Added to the conversation draft. Not sent.',
+    sendFileToConversation: 'Send files to conversation', sendFileToConversationHint: 'Show this action in the file context menu. It adds a file reference to the current conversation’s draft without sending it.',
+    referenceFailed: 'Could not add the file reference. Check that the current conversation is editable.',
     workspace: 'Workspace settings', pinWorkspace: 'Pin workspaces',
     activeIndicator: 'Active workspace indicator', activeIndicatorHint: 'Show the session status circle on the right when sessions are running or awaiting interaction. Hidden on hover, before the pin marker.',
     activityOngoing: 'Workspace has running sessions', activityWarning: 'Workspace has sessions awaiting interaction',
@@ -746,6 +913,16 @@ return {
     ctx.inject(['workspaces', 'sessions', 'uiWorkspace', 'remoteAccess'], scoped => {
       scoped.effect(() => registerWorkspaceArchiveMenu(scoped, t, source));
     });
+    ctx.slots.inject('contextMenu.icon', () => ctx.slots.register({
+      name: 'contextMenu.icon', key: FILE_REFERENCE_ICON,
+    }, () => h('svg', {width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
+      strokeWidth: 1.2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false},
+      h('circle', {cx: 8, cy: 8, r: 2.5}),
+      h('path', {d: 'M10.5 5.5v4a1.75 1.75 0 0 0 3.5 0V8a6 6 0 1 0-2.2 4.65'}))));
+    ctx.inject(['conversation', 'sessions', 'uiSession', 'layout'], scoped => {
+      scoped.effect(() => registerFileReferenceMenu(scoped, t, source));
+    });
+    ctx.effect(() => registerHiddenFilesDefault(ctx.slots, React, source, createHiddenDefaultController(() => localStorage)));
     // Keep workspace ordering usable before the provider starts and in
     // profiles without the provider.
     let workspaceService;
@@ -1456,7 +1633,30 @@ return {
                   const current = source.getSnapshot().preferences;
                   const enabled = current.workspace?.dynamicSort !== false;
                   void save({...current, workspace: {...current.workspace, dynamicSort: !enabled}});
-                }}, h('span', {'aria-hidden': true}))))));
+                }}, h('span', {'aria-hidden': true}))))),
+        h('section', {className: 'dshsb-card', 'aria-label': t('rightSidebar')},
+          h('div', {className: 'dshsb-head'}, h('h3', null,
+            h('button', {type: 'button', className: 'dshsb-disclosure',
+              id: `${panelId}-right-sidebar-toggle`, 'aria-expanded': expanded.rightSidebar,
+              'aria-controls': `${panelId}-right-sidebar`, onClick: () => togglePanel('rightSidebar')},
+              h('span', {className: 'dshsb-chevron', 'aria-hidden': true}, '▶'), t('rightSidebar')))),
+          h('div', {className: 'dshsb-panel', id: `${panelId}-right-sidebar`, hidden: !expanded.rightSidebar,
+            role: 'region', 'aria-labelledby': `${panelId}-right-sidebar-toggle`},
+            ...['showHidden', 'sendFileToConversation'].map(field => {
+              const id = `${panelId}-${field}`;
+              return h('div', {key: field, className: 'dshsb-row'},
+                h('div', {className: 'dshsb-setting-copy'},
+                  h('span', {id: `${id}-label`}, t(field)),
+                  h('span', {className: 'dshsb-setting-hint', id: `${id}-hint`}, t(`${field}Hint`))),
+                h('button', {type: 'button', className: 'dshsb-switch', role: 'switch', disabled: !writable,
+                  'aria-checked': state.rightSidebar?.[field] !== false,
+                  'aria-labelledby': `${id}-label`, 'aria-describedby': `${id}-hint`,
+                  onClick: () => {
+                    const {preferences: current, writable: canSave} = source.getSnapshot();
+                    if (!canSave) return;
+                    void save({...current, rightSidebar: {...current.rightSidebar, [field]: current.rightSidebar?.[field] === false}});
+                  }}, h('span', {'aria-hidden': true})));
+            }))));
     }
     ctx.slots.inject('settings.section.icon', () => ctx.slots.register({
       name: 'settings.section.icon', id: OWN_ID,

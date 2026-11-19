@@ -13,6 +13,10 @@ export const Config = z.object({
   preferences: z.object({
     sidebar: group(),
     settings: group(),
+    rightSidebar: z.object({
+      showHidden: z.boolean().default(true),
+      sendFileToConversation: z.boolean().default(true),
+    }).default(null),
     workspace: z.object({
       dynamicSort: z.boolean().default(true),
       pinning: z.boolean().default(true),

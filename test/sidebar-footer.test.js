@@ -189,6 +189,9 @@ function runtime(preferences = normalize(null), storage = {getItem: () => null, 
     if (deps.length === 1) {
       assert.deepEqual(Array.from(deps), ['workspaces']);
       activateWorkspaces = service => activate({workspaces: service, effect: fn => fn()});
+    } else if (deps[0] === 'conversation') {
+      assert.deepEqual(Array.from(deps), ['conversation', 'sessions', 'uiSession', 'layout']);
+      // This fixture does not mount the optional conversation provider.
     } else {
       assert.deepEqual(Array.from(deps), ['workspaces', 'sessions', 'uiWorkspace', 'remoteAccess']);
       activateArchiveMenu = services => {
@@ -524,13 +527,35 @@ test('each panel remembers its open state after remount without changing menu pr
   assert.equal(disclosure(tree, 'settings').props['aria-expanded'], true);
   disclosure(tree, 'sidebar').props.onClick();
   assert.equal(storage.getItem('dsh-sidebar.preferences.v1'), null);
-  assert.deepEqual(JSON.parse(storage.getItem(panelsKey)), {sidebar: false, settings: true, workspace: false});
+  assert.deepEqual(JSON.parse(storage.getItem(panelsKey)), {sidebar: false, settings: true, workspace: false, rightSidebar: false});
   const reloaded = runtime(undefined, storage);
   tree = reloaded.page();
   assert.equal(panelRegion(tree, 'sidebar').props.hidden, true);
   assert.equal(panelRegion(tree, 'settings').props.hidden, false);
   assert.equal(reloaded.writes.length, 0, 'folding does not write menu configuration');
-  assert.deepEqual(JSON.parse(storage.getItem(panelsKey)), {sidebar: false, settings: true, workspace: false});
+  assert.deepEqual(JSON.parse(storage.getItem(panelsKey)), {sidebar: false, settings: true, workspace: false, rightSidebar: false});
+});
+
+test('right sidebar switches default on and persist independently; file menu icon uses the native slot', async () => {
+  const env = runtime();
+  const icon = env.slots.get('contextMenu.icon').find(entry => entry.options.key === 'dsh-sidebar.file-reference').component();
+  assert.equal(icon.type, 'svg');
+  assert.equal(icon.props.width, 16);
+  assert.equal(icon.props['aria-hidden'], true);
+  disclosure(env.page(), 'right-sidebar').props.onClick();
+  const field = name => findElement(panelRegion(env.page(), 'right-sidebar'), node => node.props?.role === 'switch' &&
+    node.props['aria-labelledby'] === `test-panels-${name}-label`);
+  assert.equal(panelRegion(env.page(), 'right-sidebar').props.hidden, false);
+  assert.equal(field('showHidden').props['aria-checked'], true);
+  assert.equal(field('sendFileToConversation').props['aria-checked'], true);
+  field('showHidden').props.onClick();
+  field('sendFileToConversation').props.onClick();
+  await Promise.resolve();
+  assert.equal(env.writes.at(-1).rightSidebar.showHidden, false);
+  assert.equal(env.writes.at(-1).rightSidebar.sendFileToConversation, false);
+  assert.equal(field('sendFileToConversation').props['aria-checked'], false);
+  env.form.update({writable: false});
+  assert.equal(field('sendFileToConversation').props.disabled, true);
 });
 
 test('clean management page omits explanatory copy, reset controls and persistent saved text', () => {
