@@ -148,16 +148,35 @@ test('ties, empty workspaces and unknown or invalid timestamps keep native relat
   for(const byId of [{}, {a1:{updatedAt:30},b1:{updatedAt:30}}, {a1:{updatedAt:NaN},b1:{updatedAt:'999'}}])
     assert.equal(orderRecentWorkspaces(snapshot,{byId},view,true),snapshot);
 });
-test('ranking ignores subagents and hidden blanks', () => {
+test('ranking ignores subagents and unretained blanks', () => {
   const sessions = {byId:{a1:{updatedAt:100},a2:{updatedAt:20},b1:{updatedAt:30}}};
   for (const extra of [{origin:'subagent'}, {blank:true}]) {
     assert.deepEqual(ids(orderRecentWorkspaces(snapshot,{byId:{...sessions.byId,a1:{updatedAt:100,...extra}}},view,true)),['b','a','empty']);
   }
-  assert.equal(orderRecentWorkspaces(snapshot,{byId:{...sessions.byId,a1:{updatedAt:100,blank:true,retainedBy:{mainView:1}}}},view,true),snapshot);
 });
 
 const native = {...snapshot, state: 'idle'};
 const catalog = {...list, phase: 'ready'};
+
+test('a retained new draft does not change display order or the Host sync plan until sent', () => {
+  const before = workspaceHostOrder(native, catalog, view, true);
+  assert.deepEqual(before.ids, ['b', 'a', 'empty']);
+  for (const workspaceId of ['a', 'empty']) {
+    const current = {...native, items: native.items.map(row => row.workspaceId === workspaceId
+      ? {...row, sessionIds: [...row.sessionIds, 'draft']} : row)};
+    const draft = {blank: true, retainedBy: {mainView: 1}, updatedAt: 50};
+    const unsent = {...catalog, byId: {...catalog.byId, draft}};
+    assert.deepEqual(ids(orderRecentWorkspaces(current, unsent, view, true)), before.ids);
+    assert.deepEqual(workspaceHostOrder(current, unsent, view, true), before);
+
+    const sent = {...catalog, byId: {...catalog.byId, draft: {...draft, blank: false, updatedAt: 60}}};
+    const expected = [workspaceId, ...before.ids.filter(id => id !== workspaceId)];
+    const plan = workspaceHostOrder(current, sent, view, true);
+    assert.deepEqual(ids(orderRecentWorkspaces(current, sent, view, true)), expected);
+    assert.deepEqual(plan.ids, expected);
+    assert.notEqual(plan.key, before.key);
+  }
+});
 
 test('consecutive archives, unarchive, and archive filters leave display order and Host sync key unchanged', () => {
   const before = workspaceHostOrder(native, catalog, view, true);

@@ -12,8 +12,8 @@ function rankWorkspaces(snapshot, sessions, view, enabled, pinOptions) {
     let updatedAt = -Infinity;
     for (const id of dynamic ? workspace.sessionIds || [] : []) {
       const session = sessions?.byId?.[id];
-      if (!session || session.origin === 'subagent') continue;
-      if (session.blank && !(session.retainedBy?.mainView > 0)) continue;
+      // A draft can be visible while retained by the main view, but it is not activity.
+      if (!session || session.origin === 'subagent' || session.blank) continue;
       if (typeof session.updatedAt === 'number' && Number.isFinite(session.updatedAt)) updatedAt = Math.max(updatedAt, session.updatedAt);
     }
     return {workspace, index, updatedAt};
