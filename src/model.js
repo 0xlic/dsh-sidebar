@@ -106,6 +106,7 @@ export function normalize(value) {
       ...(Object.hasOwn(workspace, 'onlyPinned') ? {onlyPinned: workspace.onlyPinned === true} : {}),
       activeIndicator: workspace.activeIndicator !== false,
       collapseOneClick: workspace.collapseOneClick !== false,
+      ...(Object.hasOwn(workspace, 'archiveUnpinnedSessions') ? {archiveUnpinnedSessions: workspace.archiveUnpinnedSessions !== false} : {}),
       ...(Object.hasOwn(workspace, 'pinnedWorkspaceIds') ? {
         pinnedWorkspaceIds: [...new Set((Array.isArray(workspace.pinnedWorkspaceIds) ? workspace.pinnedWorkspaceIds : [])
           .filter(id => typeof id === 'string' && id.trim()))],

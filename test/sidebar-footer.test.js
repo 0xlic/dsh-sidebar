@@ -6,6 +6,76 @@ import {normalize} from '../src/model.js';
 import {WORKSPACE_COLLAPSE_ALL_CSS} from '../src/workspace.js';
 import {MORE_MENU_CSS, projectMenuTrigger} from '../src/sidebar.js';
 
+test('workspace ellipsis archives eligible members using the native session glyph and action', async () => {
+  const env = runtime();
+  let snapshot = {phase: 'ready', items: [
+    {workspaceId: 'target', sessionIds: ['pinned', 'old', 'active', 'quiet', 'laterPinned', 'hidden', 'blank', 'child', 'denied']},
+    {workspaceId: 'other', sessionIds: ['otherSession']},
+    {workspaceId: 'empty', sessionIds: []},
+  ], pinnedSessionIds: ['pinned'], archivedSessionIds: ['old']};
+  const calls = [];
+  const deactivate = env.activateArchiveMenu({
+    workspaces: {list: {getSnapshot: () => snapshot}},
+    sessions: {list: {getSnapshot: () => ({phase: 'ready', byId: {
+      pinned: {}, old: {}, active: {}, quiet: {}, laterPinned: {}, hidden: {},
+      blank: {blank: true}, child: {origin: 'subagent'}, denied: {}, otherSession: {},
+    }})}},
+    remoteAccess: {source(kind, id, endpoint) {
+      assert.equal(kind, 'session');
+      assert.equal(endpoint, 'workspace/archiveSession');
+      return {getSnapshot: () => id !== 'denied'};
+    }},
+    uiWorkspace: {async archiveSession(...args) {
+      calls.push(args);
+      if (args[0] === 'active') throw Object.assign(new Error('session active'), {rpcError: {code: 'workspace/session-active'}});
+      if (args[0] === 'quiet') snapshot = {...snapshot, pinnedSessionIds: ['pinned', 'laterPinned']};
+    }},
+  });
+  const [menu] = env.menuContributions;
+  const target = {workspaceId: 'target'};
+  const switchOf = fixture => findElement(fixture.page(), node => node.props?.['aria-labelledby'] === 'test-panels-archive-sessions-label');
+  const toggle = () => switchOf(env);
+  assert.equal(toggle().props['aria-checked'], true);
+  assert.equal(menu.resolve(target).length, 1);
+  let menuUpdates = 0;
+  const unsubscribe = menu.observe(target)[0].subscribe(() => { menuUpdates++; });
+  toggle().props.onClick(); await Promise.resolve();
+  assert.ok(menuUpdates > 0, 'open menu observes preference changes');
+  assert.equal(toggle().props['aria-checked'], false);
+  assert.equal(menu.resolve(target).length, 0);
+  assert.equal(env.writes.at(-1).workspace.archiveUnpinnedSessions, false);
+  assert.equal(switchOf(runtime(env.writes.at(-1))).props['aria-checked'], false);
+  toggle().props.onClick(); await Promise.resolve();
+  assert.equal(toggle().props['aria-checked'], true);
+  assert.equal(env.writes.at(-1).workspace.archiveUnpinnedSessions, true);
+  assert.equal(switchOf(runtime(env.writes.at(-1))).props['aria-checked'], true);
+  assert.deepEqual(calls, [], 'enabling does not archive sessions');
+  assert.equal(menu.target, 'workspace');
+  assert.equal(menu.order, 250);
+  assert.equal(menu.resolve({workspaceId: 'missing'}).length, 0);
+  assert.equal(menu.resolve({workspaceId: 'empty'})[0].disabled, true);
+  const [action] = menu.resolve({workspaceId: 'target'});
+  assert.equal(action.disabled, false);
+  assert.equal(action.icon.key, 'workspace.archive');
+  await Promise.all([action.run(), action.run()]);
+  assert.deepEqual(calls, [['active'], ['quiet'], ['hidden']]);
+  assert.deepEqual(env.notifications, [['archiveSessionsDone archiveSessionsActive archiveSessionsSkipped', false]]);
+  await menu.resolve({workspaceId: 'other'})[0].run();
+  assert.deepEqual(calls.at(-1), ['otherSession']);
+  assert.deepEqual(env.notifications.at(-1), ['archiveSessionsDone', true]);
+  assert.equal(env.writes.length, 2, 'archiving does not change preferences');
+  toggle().props.onClick(); await Promise.resolve();
+  assert.equal(env.writes.at(-1).workspace.archiveUnpinnedSessions, false);
+  assert.equal(menu.resolve(target).length, 0);
+  await action.run();
+  assert.equal(calls.length, 4, 'an old action cannot run after disabling');
+  env.form.update({writable: false});
+  assert.equal(toggle().props.disabled, true);
+  unsubscribe();
+  deactivate();
+  assert.equal(env.menuContributions.length, 0);
+});
+
 const panel = {id: 'plugins', label: 'Plugins', order: 10};
 const action = {id: 'mobile-gateway-devices', label: '移动设备', order: 80};
 const footerId = 'dsh-sidebar:action:mobile-gateway-devices';
@@ -76,11 +146,13 @@ function runtime(preferences = normalize(null), storage = {getItem: () => null, 
     ['settings.section.icon', [nativeIcon]],
     ['settings.section', [{options: {id: 'general', label: 'General'}}, {options: {id: 'plugins', label: 'Plugins'}}]],
   ]);
-  vm.runInNewContext(source, {
+  const context = vm.createContext({
     window: {__ModuleLoader__: {load: value => { injected = value.factory(id => id === 'react' ? React : {StateDot: 'NativeStateDot'}); }}},
-    localStorage: storage, setTimeout, clearTimeout,
+    localStorage: storage, setTimeout, clearTimeout, preferencesJSON: JSON.stringify(preferences),
   });
-  let config = {status: 'ready', writable: true, value: {preferences}};
+  vm.runInContext(source, context);
+  // Host preferences arrive as JSON decoded in the client's own realm.
+  let config = {status: 'ready', writable: true, value: {preferences: vm.runInContext('JSON.parse(preferencesJSON)', context)}};
   const configSubscribers = new Set(), writes = [];
   const form = {
     getSnapshot: () => config,
@@ -112,10 +184,19 @@ function runtime(preferences = normalize(null), storage = {getItem: () => null, 
       register(options, component) { const rows = slots.get(options.name) || []; rows.push({options, component}); slots.set(options.name, rows); },
     },
   };
-  let activateWorkspaces;
+  let activateWorkspaces, activateArchiveMenu;
   ctx.inject = (deps, activate) => {
-    assert.deepEqual(Array.from(deps), ['workspaces']);
-    activateWorkspaces = service => activate({workspaces: service, effect: fn => fn()});
+    if (deps.length === 1) {
+      assert.deepEqual(Array.from(deps), ['workspaces']);
+      activateWorkspaces = service => activate({workspaces: service, effect: fn => fn()});
+    } else {
+      assert.deepEqual(Array.from(deps), ['workspaces', 'sessions', 'uiWorkspace', 'remoteAccess']);
+      activateArchiveMenu = services => {
+        let cleanup;
+        activate({...services, contextMenus: ctx.contextMenus, effect: fn => { cleanup = fn(); }});
+        return cleanup;
+      };
+    }
   };
   Object.defineProperty(ctx, 'workspaces', {get() { throw new Error('cannot get property "workspaces" without inject'); }});
   injected.apply(ctx);
@@ -156,7 +237,7 @@ function runtime(preferences = normalize(null), storage = {getItem: () => null, 
     slots.set(name, entries); versions.set(name, (versions.get(name) || 0) + 1);
     for (const fn of subscribers.get(name) || []) fn();
   };
-  return {activateWorkspaces, publishSlot, subscribers, NativeFooter, shell, Shell, settings, Settings, browser, Browser, slots, props, cleanups, form, nativeIcon, nativeMore, nativeFooter, page, iconCalls, slotCalls, nativeFallbacks, writes, menuContributions, menuActive, notifications, locale: ctx.locale};
+  return {activateWorkspaces, activateArchiveMenu, publishSlot, subscribers, NativeFooter, shell, Shell, settings, Settings, browser, Browser, slots, props, cleanups, form, nativeIcon, nativeMore, nativeFooter, page, iconCalls, slotCalls, nativeFallbacks, writes, menuContributions, menuActive, notifications, locale: ctx.locale};
 }
 
 function findElement(tree, predicate) {

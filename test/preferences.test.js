@@ -39,19 +39,20 @@ test('host schema exposes menu order/names/visibility and optional workspace sor
 });
 
 test('host workspace schema defaults to enabled sorting/pinning and empty IDs and rejects malformed values', () => {
-  const defaults = {dynamicSort: true, pinning: true, onlyPinned: false, activeIndicator: true, collapseOneClick: true, pinnedWorkspaceIds: []};
+  const defaults = {dynamicSort: true, pinning: true, onlyPinned: false, activeIndicator: true, collapseOneClick: true, archiveUnpinnedSessions: true, pinnedWorkspaceIds: []};
   for (const [workspace, expected] of [
     [null, null], [{}, defaults], [{dynamicSort: false}, {...defaults, dynamicSort: false}],
     [{dynamicSort: true}, {...defaults, dynamicSort: true}],
     [{onlyPinned: true}, {...defaults, onlyPinned: true}],
     [{activeIndicator: true}, {...defaults, activeIndicator: true}],
     [{collapseOneClick: false}, {...defaults, collapseOneClick: false}],
+    [{archiveUnpinnedSessions: false}, {...defaults, archiveUnpinnedSessions: false}],
     [{pinning: true, pinnedWorkspaceIds: ['a', 'unloaded']}, {...defaults, pinning: true, pinnedWorkspaceIds: ['a', 'unloaded']}],
     [{pinning: false, pinnedWorkspaceIds: ['a']}, {...defaults, pinning: false, pinnedWorkspaceIds: ['a']}],
   ]) {
     assert.deepEqual(Config({preferences: {workspace}}).preferences.get().workspace, expected);
   }
-  for (const field of ['dynamicSort', 'pinning', 'onlyPinned', 'activeIndicator', 'collapseOneClick']) for (const value of ['true', 'false', 0, 1, [], {}]) {
+  for (const field of ['dynamicSort', 'pinning', 'onlyPinned', 'activeIndicator', 'collapseOneClick', 'archiveUnpinnedSessions']) for (const value of ['true', 'false', 0, 1, [], {}]) {
     assert.throws(() => Config({preferences: {workspace: {[field]: value}}}).preferences.get(), /expected boolean/);
   }
   for (const pinnedWorkspaceIds of ['a', true, 1, {}, [1], ['a', {}]]) {
@@ -245,7 +246,7 @@ test('visibility survives host schema and restart while protected legacy hidden 
 test('concurrent visibility saves preserve order, names and workspace; rejected latest save restores durable visibility', async () => {
   const initial = normalize({sidebar: {order: ['a', MORE_ID, 'b'], names: {a: 'Alpha'}},
     settings: {order: ['models', OWN_ID], names: {models: 'Models'}},
-    workspace: {dynamicSort: false, pinning: false, onlyPinned: true, pinnedWorkspaceIds: ['workspace']}});
+    workspace: {dynamicSort: false, pinning: false, onlyPinned: true, archiveUnpinnedSessions: true, pinnedWorkspaceIds: ['workspace']}});
   const form = fakeForm(initial), source = createPreferencesController(form);
   const first = setVisible(initial, 'sidebar', 'b', false);
   const second = setVisible(first, 'settings', 'models', false);

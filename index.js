@@ -19,6 +19,7 @@ export const Config = z.object({
       onlyPinned: z.boolean().default(false),
       activeIndicator: z.boolean().default(true),
       collapseOneClick: z.boolean().default(true),
+      archiveUnpinnedSessions: z.boolean().default(true),
       pinnedWorkspaceIds: z.array(z.string()).default([]),
     }).default(null),
   })

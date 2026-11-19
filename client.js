@@ -108,6 +108,7 @@ function normalize(value) {
       ...(Object.hasOwn(workspace, 'onlyPinned') ? {onlyPinned: workspace.onlyPinned === true} : {}),
       activeIndicator: workspace.activeIndicator !== false,
       collapseOneClick: workspace.collapseOneClick !== false,
+      ...(Object.hasOwn(workspace, 'archiveUnpinnedSessions') ? {archiveUnpinnedSessions: workspace.archiveUnpinnedSessions !== false} : {}),
       ...(Object.hasOwn(workspace, 'pinnedWorkspaceIds') ? {
         pinnedWorkspaceIds: [...new Set((Array.isArray(workspace.pinnedWorkspaceIds) ? workspace.pinnedWorkspaceIds : [])
           .filter(id => typeof id === 'string' && id.trim()))],
@@ -342,6 +343,79 @@ function filterWorkspaceSessions(sessions, workspaces, enabled) {
     ids: (sessions.ids || Object.keys(sessions.byId || {})).filter(id => members.has(id)),
     byId: Object.fromEntries(Object.entries(sessions.byId || {}).filter(([id]) => members.has(id))),
   };
+}
+
+// The context menu and native session controls use the same archive operation
+// and glyph. The workspace snapshot supplies membership independent of row limits.
+function registerWorkspaceArchiveMenu({contextMenus, workspaces, sessions, uiWorkspace, remoteAccess}, t, preferences) {
+  const enabled = () => preferences.getSnapshot().preferences.workspace?.archiveUnpinnedSessions !== false;
+  const running = new Set();
+  let live = true;
+  function readTargets(workspaceId) {
+    const workspaceList = workspaces.list.getSnapshot();
+    const sessionList = sessions.list.getSnapshot();
+    if (workspaceList.phase !== 'ready' || sessionList.phase !== 'ready') return null;
+    const workspace = workspaceList.items.find(row => row.workspaceId === workspaceId);
+    if (!workspace) return null;
+    return {workspace, workspaceList, sessionList};
+  }
+  function canArchive({workspaceList, sessionList}, id) {
+    const session = sessionList.byId[id];
+    return session && !session.blank && session.origin !== 'subagent' &&
+      !workspaceList.pinnedSessionIds.includes(id) && !workspaceList.archivedSessionIds.includes(id) &&
+      remoteAccess.source('session', id, 'workspace/archiveSession').getSnapshot();
+  }
+  const unregister = contextMenus.register({
+    id: 'dsh-sidebar.archive-workspace-sessions', target: 'workspace', order: 250,
+    observe: () => [preferences, workspaces.list, sessions.list],
+    resolve({workspaceId}) {
+      if (!enabled()) return [];
+      const targets = readTargets(workspaceId);
+      if (!targets) return [];
+      return [{
+        id: 'archive-sessions', label: t('archiveSessions'), icon: {key: 'workspace.archive'},
+        disabled: running.has(workspaceId) || !targets.workspace.sessionIds.some(id => canArchive(targets, id)),
+        failureLabel: t('archiveSessionsFailed'),
+        async run() {
+          if (!live || !enabled() || running.has(workspaceId)) return;
+          const current = readTargets(workspaceId);
+          if (!current) return;
+          const ids = [...new Set(current.workspace.sessionIds.filter(id => canArchive(current, id)))];
+          if (!ids.length) return;
+          running.add(workspaceId);
+          let archived = 0, active = 0, skipped = 0, failed = 0;
+          try {
+            for (const id of ids) {
+              // Recheck before each write: a session may have moved, been pinned,
+              // or been archived while an earlier request was in flight.
+              const latest = readTargets(workspaceId);
+              if (!live) break;
+              if (!latest) { failed++; continue; }
+              if (!latest.workspace.sessionIds.includes(id) || !canArchive(latest, id)) { skipped++; continue; }
+              try {
+                // Keep the Host's running-work refusal; a bulk action must not stop work.
+                await uiWorkspace.archiveSession(id);
+                archived++;
+              } catch (error) {
+                if (error?.rpcError?.code === 'workspace/session-active') active++;
+                else failed++;
+              }
+            }
+            if (live) {
+              const lines = [t('archiveSessionsDone', {archived})];
+              if (active) lines.push(t('archiveSessionsActive', {active}));
+              if (skipped) lines.push(t('archiveSessionsSkipped', {skipped}));
+              if (failed) lines.push(t('archiveSessionsIncomplete', {failed}));
+              contextMenus.notify(lines.join(' '), !active && !failed && archived > 0);
+            }
+          } finally {
+            running.delete(workspaceId);
+          }
+        },
+      }];
+    },
+  });
+  return () => { live = false; unregister(); };
 }
 
 // Aggregate live activity only: an unread completion is not an active session.
@@ -587,6 +661,12 @@ const dicts = {
     pinAction: '置顶工作区', unpinAction: '取消置顶工作区', pinFailed: '工作区置顶设置保存失败，请重试。',
     collapseOneClick: '工作区一键折叠', collapseOneClickHint: '在「工作区」右侧显示一键折叠按钮；关闭后隐藏按钮，视图选项中的折叠动作也不可用。',
     collapseAll: '折叠所有工作区',
+    archiveSessions: '归档未置顶会话', archiveSessionsSetting: '显示批量归档入口', archiveSessionsHint: '开启后，在工作区的「…」菜单中显示批量归档入口。置顶会话不受影响。',
+    archiveSessionsDone: '已归档 {archived} 个会话。',
+    archiveSessionsActive: '{active} 个会话仍有活动，未归档。',
+    archiveSessionsSkipped: '{skipped} 个会话已不符合归档条件，已跳过。',
+    archiveSessionsIncomplete: '{failed} 个会话归档失败，可重试。',
+    archiveSessionsFailed: '无法完成工作区会话归档，请重试。',
     filterWorkspaces: '筛选工作区', onlyPinned: '仅显示固定工作区', filterFailed: '工作区筛选设置保存失败，请重试。',
     dynamicSort: '动态调整工作区排序', dynamicSortHint: '仅在「按工作区」和「最近更新」时生效。DSH 界面保持打开且有写入权限时，顺序同步到 Host；关闭后不恢复旧顺序。',
     workspaceSyncFailed: '未能完成工作区顺序同步。移动端顺序可能与此处不同；请检查连接后刷新 DSH 重试。',
@@ -611,6 +691,12 @@ const dicts = {
     pinAction: 'Pin workspace', unpinAction: 'Unpin workspace', pinFailed: 'Could not save workspace pinning. Please retry.',
     collapseOneClick: 'One-click workspace collapse', collapseOneClickHint: 'Show the collapse-all button beside Search; when off, the button is hidden and the view-menu action is unavailable.',
     collapseAll: 'Collapse all workspaces',
+    archiveSessions: 'Archive unpinned sessions', archiveSessionsSetting: 'Show bulk archive action', archiveSessionsHint: 'Show the bulk archive action in the workspace’s “…” menu. Pinned sessions are not affected.',
+    archiveSessionsDone: 'Archived {archived} sessions.',
+    archiveSessionsActive: '{active} sessions with active work were not archived.',
+    archiveSessionsSkipped: 'Skipped {skipped} sessions that were no longer eligible.',
+    archiveSessionsIncomplete: 'Could not archive {failed} sessions. You can retry.',
+    archiveSessionsFailed: 'Could not finish archiving workspace sessions. Please retry.',
     filterWorkspaces: 'Filter workspaces', onlyPinned: 'Only show pinned workspaces', filterFailed: 'Could not save workspace filtering. Please retry.',
     dynamicSort: 'Dynamically reorder workspaces', dynamicSortHint: 'Applies in By workspace and Recently updated. A writable, open sidebar syncs the order to the Host. Turning sorting off does not restore the old order.',
     workspaceSyncFailed: 'Could not finish syncing workspace order. Mobile clients may show a different order. Check your connection, then refresh DSH to retry.',
@@ -657,8 +743,11 @@ return {
     const save = next => source.save(next);
     let live = true;
     ctx.effect(() => () => { live = false; source.dispose(); });
-    // Only the sync feature depends on this Client service. Keep the sidebar
-    // usable before the provider starts and in profiles without the provider.
+    ctx.inject(['workspaces', 'sessions', 'uiWorkspace', 'remoteAccess'], scoped => {
+      scoped.effect(() => registerWorkspaceArchiveMenu(scoped, t, source));
+    });
+    // Keep workspace ordering usable before the provider starts and in
+    // profiles without the provider.
     let workspaceService;
     ctx.inject(['workspaces'], scoped => {
       const service = scoped.workspaces;
@@ -1343,6 +1432,18 @@ return {
                   const current = source.getSnapshot().preferences;
                   const enabled = current.workspace?.collapseOneClick !== false;
                   void save({...current, workspace: {...current.workspace, collapseOneClick: !enabled}});
+                }}, h('span', {'aria-hidden': true}))),
+            h('div', {className: 'dshsb-row'},
+              h('div', {className: 'dshsb-setting-copy'},
+                h('span', {id: `${panelId}-archive-sessions-label`}, t('archiveSessionsSetting')),
+                h('span', {className: 'dshsb-setting-hint', id: `${panelId}-archive-sessions-hint`}, t('archiveSessionsHint'))),
+              h('button', {type: 'button', className: 'dshsb-switch', role: 'switch', disabled: !writable,
+                'aria-checked': state.workspace?.archiveUnpinnedSessions !== false,
+                'aria-labelledby': `${panelId}-archive-sessions-label`, 'aria-describedby': `${panelId}-archive-sessions-hint`,
+                onClick: () => {
+                  const current = source.getSnapshot().preferences;
+                  const enabled = current.workspace?.archiveUnpinnedSessions !== false;
+                  void save({...current, workspace: {...current.workspace, archiveUnpinnedSessions: !enabled}});
                 }}, h('span', {'aria-hidden': true}))),
             h('div', {className: 'dshsb-row'},
               h('div', {className: 'dshsb-setting-copy'},

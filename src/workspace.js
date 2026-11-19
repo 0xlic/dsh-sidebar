@@ -119,6 +119,79 @@ export function filterWorkspaceSessions(sessions, workspaces, enabled) {
   };
 }
 
+// The context menu and native session controls use the same archive operation
+// and glyph. The workspace snapshot supplies membership independent of row limits.
+export function registerWorkspaceArchiveMenu({contextMenus, workspaces, sessions, uiWorkspace, remoteAccess}, t, preferences) {
+  const enabled = () => preferences.getSnapshot().preferences.workspace?.archiveUnpinnedSessions !== false;
+  const running = new Set();
+  let live = true;
+  function readTargets(workspaceId) {
+    const workspaceList = workspaces.list.getSnapshot();
+    const sessionList = sessions.list.getSnapshot();
+    if (workspaceList.phase !== 'ready' || sessionList.phase !== 'ready') return null;
+    const workspace = workspaceList.items.find(row => row.workspaceId === workspaceId);
+    if (!workspace) return null;
+    return {workspace, workspaceList, sessionList};
+  }
+  function canArchive({workspaceList, sessionList}, id) {
+    const session = sessionList.byId[id];
+    return session && !session.blank && session.origin !== 'subagent' &&
+      !workspaceList.pinnedSessionIds.includes(id) && !workspaceList.archivedSessionIds.includes(id) &&
+      remoteAccess.source('session', id, 'workspace/archiveSession').getSnapshot();
+  }
+  const unregister = contextMenus.register({
+    id: 'dsh-sidebar.archive-workspace-sessions', target: 'workspace', order: 250,
+    observe: () => [preferences, workspaces.list, sessions.list],
+    resolve({workspaceId}) {
+      if (!enabled()) return [];
+      const targets = readTargets(workspaceId);
+      if (!targets) return [];
+      return [{
+        id: 'archive-sessions', label: t('archiveSessions'), icon: {key: 'workspace.archive'},
+        disabled: running.has(workspaceId) || !targets.workspace.sessionIds.some(id => canArchive(targets, id)),
+        failureLabel: t('archiveSessionsFailed'),
+        async run() {
+          if (!live || !enabled() || running.has(workspaceId)) return;
+          const current = readTargets(workspaceId);
+          if (!current) return;
+          const ids = [...new Set(current.workspace.sessionIds.filter(id => canArchive(current, id)))];
+          if (!ids.length) return;
+          running.add(workspaceId);
+          let archived = 0, active = 0, skipped = 0, failed = 0;
+          try {
+            for (const id of ids) {
+              // Recheck before each write: a session may have moved, been pinned,
+              // or been archived while an earlier request was in flight.
+              const latest = readTargets(workspaceId);
+              if (!live) break;
+              if (!latest) { failed++; continue; }
+              if (!latest.workspace.sessionIds.includes(id) || !canArchive(latest, id)) { skipped++; continue; }
+              try {
+                // Keep the Host's running-work refusal; a bulk action must not stop work.
+                await uiWorkspace.archiveSession(id);
+                archived++;
+              } catch (error) {
+                if (error?.rpcError?.code === 'workspace/session-active') active++;
+                else failed++;
+              }
+            }
+            if (live) {
+              const lines = [t('archiveSessionsDone', {archived})];
+              if (active) lines.push(t('archiveSessionsActive', {active}));
+              if (skipped) lines.push(t('archiveSessionsSkipped', {skipped}));
+              if (failed) lines.push(t('archiveSessionsIncomplete', {failed}));
+              contextMenus.notify(lines.join(' '), !active && !failed && archived > 0);
+            }
+          } finally {
+            running.delete(workspaceId);
+          }
+        },
+      }];
+    },
+  });
+  return () => { live = false; unregister(); };
+}
+
 // Aggregate live activity only: an unread completion is not an active session.
 // Match native root-row visibility, including archived filtering and blank rows.
 export function workspaceActivity(workspace, sessions, statuses, archivedIds = [], archivedFilter = 'default') {
