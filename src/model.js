@@ -103,6 +103,8 @@ export function normalize(value) {
     out.rightSidebar = {
       showHidden: rightSidebar.showHidden !== false,
       sendFileToConversation: rightSidebar.sendFileToConversation !== false,
+      quoteMarkdownSelection: rightSidebar.quoteMarkdownSelection !== false,
+      quoteCodeSelection: rightSidebar.quoteCodeSelection !== false,
     };
   }
   const workspace = value?.workspace;

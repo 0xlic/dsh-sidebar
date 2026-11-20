@@ -8,6 +8,11 @@ test('right sidebar default is checked and an explicit false survives config wri
   assert.equal(normalize(Config({preferences: {rightSidebar: {}}}).preferences.get()).rightSidebar.showHidden, true);
   const next = rename({rightSidebar: {showHidden: false}}, 'sidebar', 'chat', 'Chat');
   assert.equal(normalize(Config({preferences: next}).preferences.get()).rightSidebar.showHidden, false);
+  assert.equal(normalize(Config({preferences: next}).preferences.get()).rightSidebar.quoteMarkdownSelection, true);
+  const quoteOff = rename({rightSidebar: {quoteCodeSelection: false}}, 'sidebar', 'chat', 'Chat');
+  assert.deepEqual(normalize(Config({preferences: quoteOff}).preferences.get()).rightSidebar, {
+    showHidden: true, sendFileToConversation: true, quoteMarkdownSelection: true, quoteCodeSelection: false,
+  });
   assert.equal(normalize(null).rightSidebar, undefined);
   assert.throws(() => Config({preferences: {rightSidebar: {showHidden: 'false'}}}).preferences.get(), /expected boolean/);
 });

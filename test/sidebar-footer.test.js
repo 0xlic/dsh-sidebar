@@ -554,8 +554,26 @@ test('right sidebar switches default on and persist independently; file menu ico
   assert.equal(env.writes.at(-1).rightSidebar.showHidden, false);
   assert.equal(env.writes.at(-1).rightSidebar.sendFileToConversation, false);
   assert.equal(field('sendFileToConversation').props['aria-checked'], false);
+  assert.equal(field('quoteMarkdownSelection').props['aria-checked'], true);
+  field('quoteMarkdownSelection').props.onClick();
+  await Promise.resolve();
+  assert.deepEqual({...env.writes.at(-1).rightSidebar}, {
+    showHidden: false, sendFileToConversation: false, quoteMarkdownSelection: false, quoteCodeSelection: true,
+  });
+  assert.equal(field('quoteMarkdownSelection').props['aria-checked'], false);
+  field('quoteMarkdownSelection').props.onClick();
+  await Promise.resolve();
+  assert.equal(field('quoteMarkdownSelection').props['aria-checked'], true);
+  assert.equal(field('quoteCodeSelection').props['aria-checked'], true);
+  field('quoteCodeSelection').props.onClick();
+  await Promise.resolve();
+  assert.equal(env.writes.at(-1).rightSidebar.quoteCodeSelection, false);
+  assert.equal(field('quoteCodeSelection').props['aria-checked'], false);
+  assert.equal(field('quoteMarkdownSelection').props['aria-checked'], true);
   env.form.update({writable: false});
+  assert.equal(field('quoteCodeSelection').props.disabled, true);
   assert.equal(field('sendFileToConversation').props.disabled, true);
+  assert.equal(field('quoteMarkdownSelection').props.disabled, true);
 });
 
 test('clean management page omits explanatory copy, reset controls and persistent saved text', () => {

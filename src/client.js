@@ -29,6 +29,9 @@ const dicts = {
     referenceFile: '发送到会话', referenceAdded: '已添加到会话输入框，尚未发送。',
     sendFileToConversation: '发送文件到会话', sendFileToConversationHint: '在文件右键菜单中显示此操作。文件引用会加入当前会话的输入框，不会自动发送。',
     referenceFailed: '无法添加文件引用，请确认当前会话可以编辑。',
+    quoteText: '引用文本', quoteCode: '引用代码', quoteFailed: '无法添加引用，请确认当前会话可以编辑。',
+    quoteCodeSelection: '代码预览引用代码', quoteCodeSelectionHint: '在代码预览中选中片段时显示「引用代码」，将片段和文件行号添加到当前草稿，不会自动发送。',
+    quoteMarkdownSelection: 'Markdown 预览引用文本', quoteMarkdownSelectionHint: '在 Markdown 预览中选中文字时显示「引用文本」。关闭后仍可选中和复制，不影响会话内引用或已有草稿。',
     workspace: '工作区设置', pinWorkspace: '置顶工作区',
     activeIndicator: '活跃工作区标识', activeIndicatorHint: '工作区有运行中或等待交互的会话时，在右侧显示会话同款圆圈；悬停时隐藏，固定图标位于其右侧。',
     activityOngoing: '工作区有运行中的会话', activityWarning: '工作区有等待交互的会话',
@@ -64,6 +67,9 @@ const dicts = {
     referenceFile: 'Send to conversation', referenceAdded: 'Added to the conversation draft. Not sent.',
     sendFileToConversation: 'Send files to conversation', sendFileToConversationHint: 'Show this action in the file context menu. It adds a file reference to the current conversation’s draft without sending it.',
     referenceFailed: 'Could not add the file reference. Check that the current conversation is editable.',
+    quoteText: 'Quote text', quoteCode: 'Quote code', quoteFailed: 'Could not add the quote. Check that the current conversation is editable.',
+    quoteMarkdownSelection: 'Quote text from Markdown previews', quoteMarkdownSelectionHint: 'Show “Quote text” when you select text in a Markdown preview. Turning this off does not affect copying, in-chat quotes, or existing drafts.',
+    quoteCodeSelection: 'Quote code from previews', quoteCodeSelectionHint: 'Show “Quote code” when you select code. It adds the snippet and its source lines to the draft without sending it.',
     workspace: 'Workspace settings', pinWorkspace: 'Pin workspaces',
     activeIndicator: 'Active workspace indicator', activeIndicatorHint: 'Show the session status circle on the right when sessions are running or awaiting interaction. Hidden on hover, before the pin marker.',
     activityOngoing: 'Workspace has running sessions', activityWarning: 'Workspace has sessions awaiting interaction',
@@ -134,6 +140,7 @@ return {
       h('path', {d: 'M10.5 5.5v4a1.75 1.75 0 0 0 3.5 0V8a6 6 0 1 0-2.2 4.65'}))));
     ctx.inject(['conversation', 'sessions', 'uiSession', 'layout'], scoped => {
       scoped.effect(() => registerFileReferenceMenu(scoped, t, source));
+      scoped.effect(() => registerPreviewQuote(scoped, React, t, source));
     });
     ctx.effect(() => registerHiddenFilesDefault(ctx.slots, React, source, createHiddenDefaultController(() => localStorage)));
     // Keep workspace ordering usable before the provider starts and in
@@ -855,7 +862,7 @@ return {
               h('span', {className: 'dshsb-chevron', 'aria-hidden': true}, '▶'), t('rightSidebar')))),
           h('div', {className: 'dshsb-panel', id: `${panelId}-right-sidebar`, hidden: !expanded.rightSidebar,
             role: 'region', 'aria-labelledby': `${panelId}-right-sidebar-toggle`},
-            ...['showHidden', 'sendFileToConversation'].map(field => {
+            ...['showHidden', 'sendFileToConversation', 'quoteMarkdownSelection', 'quoteCodeSelection'].map(field => {
               const id = `${panelId}-${field}`;
               return h('div', {key: field, className: 'dshsb-row'},
                 h('div', {className: 'dshsb-setting-copy'},
