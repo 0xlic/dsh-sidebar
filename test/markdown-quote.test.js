@@ -1,6 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {markdownQuoteInput, markdownQuotePosition, previewCodePath, readCodeSelection, readMarkdownSelection, registerPreviewQuote} from '../src/markdown-quote.js';
+import {
+  markdownQuoteInput, markdownQuotePosition, previewCodePath, previewPlanBelongsToSession, previewQuoteAvailability,
+  readCodeSelection, readMarkdownSelection, registerPreviewQuote,
+} from '../src/markdown-quote.js';
 
 const rect = (left, top, right, bottom) => ({left, top, right, bottom});
 
@@ -34,6 +37,95 @@ test('only a nonblank, single selection contained by one Markdown body can be qu
   assert.equal(readMarkdownSelection(root, selection), null);
 });
 
+test('plan Markdown selections stay in the visible plan body', () => {
+  const plan = {closest: () => null};
+  const endpoint = owner => ({nodeType: 3, parentElement: {
+    closest: selector => selector === '[data-plan-preview]' ? owner : null,
+  }});
+  const range = {startContainer: endpoint(plan), endContainer: endpoint(plan)};
+  const selection = {isCollapsed: false, rangeCount: 1, getRangeAt: () => range, toString: () => '  计划步骤  '};
+  const root = {contains: node => node === plan};
+  assert.deepEqual(readMarkdownSelection(root, selection, 'plan'), {text: '计划步骤', range, body: plan});
+  assert.equal(readMarkdownSelection(root, selection), null);
+  range.endContainer = endpoint({});
+  assert.equal(readMarkdownSelection(root, selection, 'plan'), null);
+  range.endContainer = endpoint(plan);
+  plan.closest = () => ({inert: true});
+  assert.equal(readMarkdownSelection(root, selection, 'plan'), null);
+});
+
+function previewTarget() {
+  const target = {current: 'one', panel: null, block: undefined, status: new Map()};
+  const input = {insertQuote: () => true};
+  const ctx = {
+    uiSession: {
+      adapter: {current: {getSnapshot: () => ({key: target.current})}},
+      sessionStatus: {getSnapshot: () => target.status},
+    },
+    layout: {panelInfo: {getSnapshot: () => ({activePanelId: target.panel})}},
+    conversation: {blocks: {storeFor(sessionId) {
+      assert.equal(sessionId, 'one');
+      return {getSnapshot: () => target.block};
+    }}},
+  };
+  function setPending(kind, sessionId = 'one') {
+    target.status = new Map([[sessionId, {pendingInteraction: {kind, sessionId, key: `${sessionId}:${kind}`}}]]);
+  }
+  return {ctx, input, target, setPending};
+}
+
+test('preview quote availability follows the current session, panel, draft phase and composer block', () => {
+  const {ctx, input, target, setPending} = previewTarget();
+  const available = phase => previewQuoteAvailability(ctx, 'one', input, phase);
+  assert.equal(previewQuoteAvailability(ctx, 'one', input), 'quote');
+  assert.equal(available('plain'), 'quote');
+  for (const phase of ['adjudicating', 'claimed', 'submitting', 'sending']) assert.equal(available(phase), null, phase);
+  target.block = {reason: 'Composer unavailable'};
+  assert.equal(available('plain'), null);
+  target.block = undefined;
+  setPending('question', 'two');
+  assert.equal(available('plain'), 'quote');
+  target.current = 'two';
+  assert.equal(available('plain'), null);
+  target.current = 'one';
+  target.panel = 'settings';
+  assert.equal(available('plain'), null);
+  target.panel = null;
+  assert.equal(previewQuoteAvailability(ctx, 'one', {}, 'plain'), null);
+});
+
+test('plan review is distinct from quoting; generic pending interactions disable quotes', () => {
+  const {ctx, input, target, setPending} = previewTarget();
+  const available = (phase, session) => previewQuoteAvailability(ctx, 'one', input, phase, session);
+  setPending('question');
+  assert.equal(available('plain'), null);
+  assert.equal(markdownQuoteInput(ctx, 'one', input), null);
+  setPending('plan-review');
+  assert.equal(available('plain'), 'plan-review');
+  assert.equal(markdownQuoteInput(ctx, 'one', input), null);
+  assert.equal(available('sending'), 'plan-review');
+  target.block = {reason: 'Composer unavailable'};
+  assert.equal(available('plain'), null);
+  target.block = undefined;
+  assert.equal(available('plain', {removed: true}), null);
+  target.panel = 'settings';
+  assert.equal(available('plain'), null);
+  target.panel = null;
+  assert.equal(previewQuoteAvailability(ctx, 'one', {}, 'plain'), null);
+  target.status = new Map();
+  target.block = undefined;
+  assert.equal(available('plain'), 'quote');
+});
+
+test('removed and non-continuable sessions cannot receive preview quotes', () => {
+  const {ctx, input} = previewTarget();
+  const available = session => previewQuoteAvailability(ctx, 'one', input, 'plain', session);
+  assert.equal(available({removed: true}), null);
+  assert.equal(available({subagent: {address: {mode: 'one-shot'}}}), null);
+  assert.equal(available({subagent: {address: {mode: 'unknown'}}}), null);
+  assert.equal(available({removed: false, subagent: {address: {mode: 'continuable'}}}), 'quote');
+});
+
 test('preview resolves only the visible current conversation’s native quote input', () => {
   let current = 'one', panel = null;
   const quotes = [];
@@ -58,6 +150,43 @@ test('code addresses preserve escaped filename characters and belong to the prev
   assert.equal(previewCodePath(addr, 'other'), null);
   assert.equal(previewCodePath('dsh-resource://file/session/a/a%ZZ.ts', 'a'), null);
   assert.equal(previewCodePath('dsh-resource://file/absolute/a.ts', 'a'), null);
+});
+
+test('durable and temporary plan addresses belong only to their decoded session', () => {
+  const durable = 'dsh-resource://plan/a%20b/call%23id';
+  assert.equal(previewPlanBelongsToSession(durable, 'a b'), true);
+  assert.equal(previewPlanBelongsToSession(durable, 'other'), false);
+
+  for (const mode of ['one-shot', 'continuable', 'unknown']) {
+    const subagent = `dsh-resource://plan/subagent/parent/child%20id/${mode}/call%2Fid`;
+    assert.equal(previewPlanBelongsToSession(subagent, 'child id'), true);
+    assert.equal(previewPlanBelongsToSession(subagent, 'parent'), false);
+  }
+
+  const temporary = 'dsh-resource://plan-review/a%20b/window%3Arequest';
+  assert.equal(previewPlanBelongsToSession(temporary, 'a b'), true);
+  assert.equal(previewPlanBelongsToSession(temporary, 'other'), false);
+});
+
+test('plan addresses reject invalid encodings, modes and URI shapes', () => {
+  for (const address of [
+    undefined,
+    'dsh-resource://file/session/a/plan.md',
+    'dsh-resource://plan/a',
+    'dsh-resource://plan/a/',
+    'dsh-resource://plan//call',
+    'dsh-resource://plan/a/call/extra',
+    'dsh-resource://plan/a/call?view=markdown',
+    'dsh-resource://plan/a/call#heading',
+    'dsh-resource://plan/a/%ZZ',
+    'dsh-resource://plan/subagent/parent/a/unsupported/call',
+    'dsh-resource://plan/subagent//a/continuable/call',
+    'dsh-resource://plan/subagent/parent/a/continuable/',
+    'dsh-resource://plan-review/a',
+    'dsh-resource://plan-review/a/request/extra',
+    'dsh-resource://plan-review/a/%ZZ',
+    'dsh-resource://plan-review/%ZZ/request',
+  ]) assert.equal(previewPlanBelongsToSession(address, 'a'), false, String(address));
 });
 
 function codeRange(rendered, from, to) {
@@ -97,28 +226,49 @@ test('code quoting ignores whitespace, stale text, hidden previews and ranges ou
   assert.equal(read(), null);
 });
 
-test('only the built-in Markdown and code slot entries are wrapped and the wrappers are reversible', () => {
+test('only the built-in Markdown, code and plan entries are wrapped across both native slots', () => {
   const native = () => null;
-  const md = {component: native, options: {key: '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/markdown'}};
-  const code = {component: native, options: {key: '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/code'}};
-  const other = {component: native, options: {key: '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/text'}};
-  let entries = [md, code, other], sync, unsubscribed = false;
+  const entry = key => ({component: native, options: {key}});
+  const md = entry('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/markdown');
+  const code = entry('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/code');
+  const other = entry('@deepseek-ai/dsh-client-ui-sidebar-documentpreview/text');
+  const plan = entry('@deepseek-ai/dsh-client-ui-plan');
+  const otherTab = entry('third-party-preview');
+  const documentSlot = 'sidebar.right.tab.document', paneSlot = 'sidebar.right.pane.tab';
+  const entries = new Map([[documentSlot, [md, code, other]], [paneSlot, [plan, otherTab]]]);
+  const listeners = new Map(), unsubscribed = new Set();
   const ctx = {uiSession: {adapter: {current: {}}}, layout: {panelInfo: {}}, slots: {
-    entriesOfSlot(slot) { assert.equal(slot, 'sidebar.right.tab.document'); return entries; },
-    subscribe(slot, listener) { assert.equal(slot, 'sidebar.right.tab.document'); sync = listener; return () => { unsubscribed = true; }; },
+    entriesOfSlot(slot) { assert.ok(entries.has(slot), slot); return entries.get(slot); },
+    subscribe(slot, listener) {
+      assert.ok(entries.has(slot), slot);
+      assert.equal(listeners.has(slot), false);
+      listeners.set(slot, listener);
+      return () => { unsubscribed.add(slot); listeners.delete(slot); };
+    },
   }};
   const cleanup = registerPreviewQuote(ctx, {}, key => key, {getSnapshot: () => ({preferences: {}})});
-  assert.notEqual(md.component, native);
-  assert.notEqual(code.component, native);
-  assert.equal(other.component, native);
-  entries = [other]; sync();
+  assert.deepEqual(new Set(listeners.keys()), new Set([documentSlot, paneSlot]));
+  for (const wrapped of [md, code, plan]) assert.notEqual(wrapped.component, native, wrapped.options.key);
+  for (const unmatched of [other, otherTab]) assert.equal(unmatched.component, native, unmatched.options.key);
+
+  const planWrapper = plan.component;
+  entries.set(documentSlot, [other]); listeners.get(documentSlot)();
   assert.equal(md.component, native);
   assert.equal(code.component, native);
-  entries = [md, code, other]; sync();
+  assert.equal(plan.component, planWrapper);
+  entries.set(documentSlot, [md, code, other]); listeners.get(documentSlot)();
   assert.notEqual(md.component, native);
   assert.notEqual(code.component, native);
+
+  const mdWrapper = md.component;
+  entries.set(paneSlot, [otherTab]); listeners.get(paneSlot)();
+  assert.equal(plan.component, native);
+  assert.equal(md.component, mdWrapper);
+  entries.set(paneSlot, [plan, otherTab]); listeners.get(paneSlot)();
+  assert.notEqual(plan.component, native);
+
   cleanup();
-  assert.equal(unsubscribed, true);
-  assert.equal(md.component, native);
-  assert.equal(code.component, native);
+  assert.deepEqual(unsubscribed, new Set([documentSlot, paneSlot]));
+  assert.equal(listeners.size, 0);
+  for (const restored of [md, code, plan]) assert.equal(restored.component, native, restored.options.key);
 });

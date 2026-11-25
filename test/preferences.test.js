@@ -95,18 +95,39 @@ test('configuration is authoritative and writes include all preferences, then su
   reloaded.dispose();
 });
 
+test('first save of legacy Host preferences replaces both legacy quote keys', async () => {
+  const initial = Config({preferences: {rightSidebar: {showHidden: false, sendFileToConversation: false,
+    quoteMarkdownSelection: true, quoteCodeSelection: false}}}).preferences.get();
+  const expected = {showHidden: false, sendFileToConversation: false, quotePreviewSelection: false};
+  const form = fakeForm(initial), source = createPreferencesController(form);
+  assert.deepEqual(source.getSnapshot().preferences.rightSidebar, expected);
+  assert.equal(form.writes.length, 0);
+  const saved = source.save(rename(source.getSnapshot().preferences, 'sidebar', 'files', 'Files'));
+  assert.deepEqual(form.writes[0].value.rightSidebar, expected);
+  form.settle(true);
+  assert.equal(await saved, true);
+  source.dispose();
+
+  const persisted = Config({preferences: form.getSnapshot().value.preferences}).preferences.get();
+  assert.deepEqual(persisted.rightSidebar, expected);
+  const restarted = createPreferencesController(fakeForm(persisted));
+  assert.deepEqual(restarted.getSnapshot().preferences.rightSidebar, expected);
+  restarted.dispose();
+});
+
 test('one-time browser migration clears local data only after the host accepts the config write', async () => {
   const form = fakeForm(undefined);
   const old = {sidebar: {
     order: ['a', 'dsh-sidebar:more', 'b', 'dsh-sidebar:footer:devices', 'unloaded'],
     hidden: ['a', 'b'], names: {a: '我的菜单', unloaded: '未加载', 'dsh-sidebar:more': '更多', 'dsh-sidebar:footer:devices': '设备'},
-  }};
+  }, rightSidebar: {quoteMarkdownSelection: false}};
   const migrated = normalize(old);
   let cleared = false;
   const source = createPreferencesController(form, {read: () => old, clear: () => { cleared = true; }});
   assert.equal(source.getSnapshot().status, 'saving');
   assert.equal(cleared, false);
   assert.deepEqual(form.writes[0].value, migrated);
+  assert.deepEqual(form.writes[0].value.rightSidebar, {showHidden: true, sendFileToConversation: true, quotePreviewSelection: false});
   assert.deepEqual(migrated.sidebar, {order: ['a', MORE_ID, 'b', 'unloaded'], hidden: ['a', 'b'], names: {a: '我的菜单', unloaded: '未加载'}});
   assert.deepEqual(arrange([{id: 'a'}, {id: 'b'}], migrated.sidebar).map(row => row.id), ['a', 'b']);
   const split = splitSidebar([{id: 'a'}, {id: 'b'}], migrated.sidebar);

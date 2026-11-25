@@ -105,8 +105,9 @@ function normalize(value) {
     out.rightSidebar = {
       showHidden: rightSidebar.showHidden !== false,
       sendFileToConversation: rightSidebar.sendFileToConversation !== false,
-      quoteMarkdownSelection: rightSidebar.quoteMarkdownSelection !== false,
-      quoteCodeSelection: rightSidebar.quoteCodeSelection !== false,
+      quotePreviewSelection: typeof rightSidebar.quotePreviewSelection === 'boolean'
+        ? rightSidebar.quotePreviewSelection
+        : rightSidebar.quoteMarkdownSelection !== false && rightSidebar.quoteCodeSelection !== false,
     };
   }
   const workspace = value?.workspace;
@@ -787,17 +788,21 @@ function registerHiddenFilesDefault(slots, React, source, applyDefault) {
   };
 }
 
-// rc.5 has no selection-action seat in previews. Wrap the two built-in
-// registrations, leaving their loader, renderer and Session props native.
-const PREVIEW_QUOTE_SLOT = 'sidebar.right.tab.document';
-const PREVIEW_QUOTE_ENTRIES = new Map([
-  ['@deepseek-ai/dsh-client-ui-sidebar-documentpreview/markdown', 'markdown'],
-  ['@deepseek-ai/dsh-client-ui-sidebar-documentpreview/code', 'code'],
+// rc.5 has no preview selection-action slot. Wrap only the known renderers,
+// leaving their resource loading, preview content and Session props native.
+const PREVIEW_QUOTE_SLOTS = new Map([
+  ['sidebar.right.tab.document', new Map([
+    ['@deepseek-ai/dsh-client-ui-sidebar-documentpreview/markdown', 'markdown'],
+    ['@deepseek-ai/dsh-client-ui-sidebar-documentpreview/code', 'code'],
+  ])],
+  ['sidebar.right.pane.tab', new Map([['@deepseek-ai/dsh-client-ui-plan', 'plan']])],
 ]);
 const CODE_BODY = '[data-code-preview] [data-code-block-content] pre > code';
+const PLAN_BODY = '[data-plan-preview]';
 const MARKDOWN_QUOTE_CSS = `
 .dshsb-markdown-quote-root{position:relative;min-width:0}
 .dshsb-markdown-quote-root[data-quote-kind=code]{display:flex;flex:1 1 auto;flex-direction:column;min-height:0;height:100%}
+.dshsb-markdown-quote-root[data-quote-kind=plan]{min-height:0;height:100%}
 .dshsb-markdown-quote{position:absolute;z-index:2;visibility:hidden;padding:5px 10px;border:0;border-radius:999px;
   background:var(--dsw-alias-button-floating-fill);--dsw-elevation-stroke-color:var(--dsw-alias-border-l3);
   box-shadow:var(--dsw-elevation-panel);color:var(--dsw-alias-label-primary);font:var(--dsw-font-xs-13);
@@ -805,12 +810,15 @@ const MARKDOWN_QUOTE_CSS = `
 .dshsb-markdown-quote:focus-visible{background:var(--dsw-alias-button-floating-hover);
   outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
 @media(hover:hover){.dshsb-markdown-quote:hover{background:var(--dsw-alias-button-floating-hover)}}
+.dshsb-markdown-quote[data-hint]{pointer-events:none;cursor:default;box-sizing:border-box;max-width:calc(100% - 8px);
+  border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-secondary);white-space:normal;overflow-wrap:anywhere}
 `;
 
-function readMarkdownSelection(root, selection) {
+function readMarkdownSelection(root, selection, kind) {
   if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null;
   const range = selection.getRangeAt(0);
-  const bodyOf = node => (node.nodeType === 1 ? node : node.parentElement)?.closest('[data-document-markdown]');
+  const selector = kind === 'plan' ? PLAN_BODY : '[data-document-markdown]';
+  const bodyOf = node => (node.nodeType === 1 ? node : node.parentElement)?.closest(selector);
   const body = bodyOf(range.startContainer);
   if (!body || body !== bodyOf(range.endContainer) || !root.contains(body) || body.closest('[hidden],[inert]')) return null;
   const text = selection.toString().trim();
@@ -882,12 +890,32 @@ function markdownQuotePosition(rects, bounds, size, pointer) {
   };
 }
 
-function markdownQuoteInput({uiSession, layout}, sessionId, inputActions) {
+function previewPlanBelongsToSession(address, sessionId) {
+  const match = typeof address === 'string' && /^dsh-resource:\/\/(plan|plan-review)\/([^?#]+)$/.exec(address);
+  if (!match || !sessionId) return false;
+  try {
+    const raw = match[2].split('/');
+    const parts = raw.map(decodeURIComponent);
+    if (parts.some(part => !part)) return false;
+    if (parts.length === 2) return parts[0] === sessionId;
+    return match[1] === 'plan' && parts.length === 5 && raw[0] === 'subagent' &&
+      parts[2] === sessionId && ['one-shot', 'continuable', 'unknown'].includes(parts[3]);
+  } catch { return false; }
+}
+
+function previewQuoteAvailability({uiSession, layout, conversation}, sessionId, inputActions, inputPhase, session) {
   if (!sessionId || uiSession.adapter.current.getSnapshot().key !== sessionId ||
-      layout.panelInfo.getSnapshot().activePanelId !== null) return null;
-  // The session-scoped document slot receives this stable standard prop from
-  // uiConversation, just like the native transcript quote action.
-  return typeof inputActions?.insertQuote === 'function' ? inputActions : null;
+      layout.panelInfo.getSnapshot().activePanelId !== null || typeof inputActions?.insertQuote !== 'function' ||
+      session?.removed || (session?.subagent && session.subagent.address?.mode !== 'continuable') ||
+      conversation?.blocks?.storeFor(sessionId).getSnapshot() !== undefined) return null;
+  const pending = uiSession.sessionStatus?.getSnapshot().get(sessionId)?.pendingInteraction;
+  if (pending) return pending.kind === 'plan-review' ? 'plan-review' : null;
+  if (inputPhase !== undefined && inputPhase !== 'plain') return null;
+  return 'quote';
+}
+
+function markdownQuoteInput(ctx, sessionId, inputActions, inputPhase, session) {
+  return previewQuoteAvailability(ctx, sessionId, inputActions, inputPhase, session) === 'quote' ? inputActions : null;
 }
 
 function markdownVisibleBounds(body, view) {
@@ -896,7 +924,6 @@ function markdownVisibleBounds(body, view) {
   for (let node = body; node; node = node.parentElement) {
     const style = view.getComputedStyle(node);
     if (style.display === 'none' || style.visibility === 'hidden' || node.hidden || node.inert) return null;
-    if (node === body) continue;
     const clipsX = /^(auto|scroll|hidden|clip|overlay)$/.test(style.overflowX);
     const clipsY = /^(auto|scroll|hidden|clip|overlay)$/.test(style.overflowY);
     if (!clipsX && !clipsY) continue;
@@ -913,24 +940,35 @@ function sameMarkdownRange(a, b) {
 }
 
 function registerPreviewQuote(ctx, React, t, preferences) {
-  const isEnabled = kind => preferences.getSnapshot().preferences.rightSidebar?.[
-    kind === 'code' ? 'quoteCodeSelection' : 'quoteMarkdownSelection'] !== false;
+  const isEnabled = () => preferences.getSnapshot().preferences.rightSidebar?.quotePreviewSelection !== false;
   const h = React.createElement;
   const patches = new Map();
   const current = ctx.uiSession.adapter.current;
   const panels = ctx.layout.panelInfo;
+  const status = ctx.uiSession.sessionStatus;
   let live = true;
   const disposers = new Set();
 
-  function QuotePreview({Native, nativeProps, kind, path}) {
-    const {sessionId, content, inputActions} = nativeProps;
+  function QuotePreview({Native, nativeProps, kind, path, visible = true}) {
+    const {sessionId, content, inputActions, useInput, useSession} = nativeProps;
     const root = React.useRef(null);
     const button = React.useRef(null);
     const selected = React.useRef(null);
     const [shown, setShown] = React.useState(false);
-    const text = content.text;
-    const enabled = React.useSyncExternalStore(preferences.subscribe, () => isEnabled(kind));
-    const readSelection = (el, selection) => kind === 'code' ? readCodeSelection(el, selection, text, path) : readMarkdownSelection(el, selection);
+    const text = content?.text;
+    const enabled = React.useSyncExternalStore(preferences.subscribe, isEnabled);
+    const inputPhase = useInput(input => input.phase);
+    const removed = useSession(session => session.removed);
+    const subagent = useSession(session => session.subagent);
+    const session = {removed, subagent};
+    const block = ctx.conversation?.blocks?.storeFor(sessionId);
+    const subscribeTarget = React.useCallback(listener => {
+      const unsub = [current, panels, status, block].filter(Boolean).map(store => store.subscribe(listener));
+      return () => { for (const off of unsub) off(); };
+    }, [block]);
+    const getTarget = () => visible ? previewQuoteAvailability(ctx, sessionId, inputActions, inputPhase, session) : null;
+    const target = React.useSyncExternalStore(subscribeTarget, getTarget);
+    const readSelection = (el, selection) => kind === 'code' ? readCodeSelection(el, selection, text, path) : readMarkdownSelection(el, selection, kind);
     React.useSyncExternalStore(callback => ctx.locale.subscribe(callback), () => ctx.locale.getSnapshot());
     function dismiss() {
       selected.current = null;
@@ -953,7 +991,7 @@ function registerPreviewQuote(ctx, React, t, preferences) {
     }
     React.useLayoutEffect(place);
     React.useLayoutEffect(() => {
-      if (!enabled) return;
+      if (!enabled || !visible) return;
       const el = root.current;
       const doc = el?.ownerDocument, view = doc?.defaultView;
       if (!view) return;
@@ -964,7 +1002,7 @@ function registerPreviewQuote(ctx, React, t, preferences) {
         frame = view.requestAnimationFrame(() => { frame = null; place(); });
       };
       const refresh = pointer => {
-        if (pointerSelecting || !live || !isEnabled(kind)) return;
+        if (pointerSelecting || !live || !isEnabled()) return;
         const selection = readSelection(el, doc.getSelection());
         if (!selection) {
           // Tabbing to the button can collapse the document highlight.
@@ -975,7 +1013,7 @@ function registerPreviewQuote(ctx, React, t, preferences) {
         }
         if (sameMarkdownRange(previousRange, selection.range)) return;
         previousRange = selection.range.cloneRange();
-        if (!markdownQuoteInput(ctx, sessionId, inputActions)) { dismiss(); return; }
+        if (!getTarget()) { dismiss(); return; }
         selected.current = {...selection, range: previousRange, rawText: previousRange.toString(), pointer};
         setShown(true);
         schedulePlacement();
@@ -999,25 +1037,25 @@ function registerPreviewQuote(ctx, React, t, preferences) {
         cancel();
       };
       const checkTarget = () => {
-        if (current.getSnapshot().key !== sessionId || panels.getSnapshot().activePanelId !== null) cancel();
+        if (!getTarget()) cancel();
       };
       const listeners = [[doc, 'selectionchange', change], [doc, 'pointerdown', down, true],
         [doc, 'pointerup', up, true], [doc, 'pointercancel', cancel, true], [doc, 'keydown', keydown, true],
         [doc, 'scroll', schedulePlacement, true], [view, 'resize', schedulePlacement], [view, 'blur', cancel]];
       for (const [target, event, fn, capture] of listeners) target.addEventListener(event, fn, capture);
-      const offSession = current.subscribe(checkTarget), offPanel = panels.subscribe(checkTarget);
+      const offTarget = subscribeTarget(checkTarget);
       const observer = typeof view.ResizeObserver === 'function' ? new view.ResizeObserver(schedulePlacement) : null;
       observer?.observe(el);
       const dispose = () => {
         if (!disposers.delete(dispose)) return;
         for (const [target, event, fn, capture] of listeners) target.removeEventListener(event, fn, capture);
-        offSession(); offPanel(); observer?.disconnect();
+        offTarget(); observer?.disconnect();
         if (frame !== null) view.cancelAnimationFrame(frame);
         dismiss();
       };
       disposers.add(dispose);
       return dispose;
-    }, [sessionId, text, inputActions, enabled]);
+    }, [sessionId, text, inputActions, enabled, visible, inputPhase, removed, subagent, subscribeTarget]);
 
     function quote() {
       const el = root.current, captured = selected.current;
@@ -1028,9 +1066,11 @@ function registerPreviewQuote(ctx, React, t, preferences) {
         captured.body.contains(captured.range.startContainer) && captured.body.contains(captured.range.endContainer) &&
         captured.range.toString() === captured.rawText &&
         (kind !== 'code' || readCodeRange(el, captured.range, text, path)?.text === captured.text);
-      if (!live || !isEnabled(kind) || !captured || (!keyboardSelection && (!selection ||
+      if (!live || !visible || !isEnabled() || !captured || (!keyboardSelection && (!selection ||
           !sameMarkdownRange(captured.range, selection.range) || selection.text !== captured.text))) { dismiss(); return; }
-      const input = markdownQuoteInput(ctx, sessionId, inputActions);
+      const view = el?.ownerDocument.defaultView;
+      if (!view || !markdownVisibleBounds(captured.body, view)) { dismiss(); return; }
+      const input = markdownQuoteInput(ctx, sessionId, inputActions, inputPhase, session);
       if (!input) { dismiss(); return; }
       if (!input.insertQuote(captured.text)) {
         ctx.contextMenus.notify(t('quoteFailed'), false);
@@ -1042,34 +1082,50 @@ function registerPreviewQuote(ctx, React, t, preferences) {
       }
       dismiss();
     }
+    const floating = {ref: button, className: 'dshsb-markdown-quote'};
     return h('div', {ref: root, className: 'dshsb-markdown-quote-root', 'data-quote-kind': kind}, h('style', null, MARKDOWN_QUOTE_CSS),
-      h(Native, nativeProps), enabled && shown && h('button', {ref: button, type: 'button', className: 'dshsb-markdown-quote',
-        onPointerDown: event => event.preventDefault(), onClick: quote}, t(kind === 'code' ? 'quoteCode' : 'quoteText')));
+      h(Native, nativeProps), enabled && shown && (target === 'plan-review'
+        ? h('div', {...floating, role: 'status', 'data-hint': ''}, t('quotePlanReview'))
+        : target === 'quote' && h('button', {...floating, type: 'button',
+          onPointerDown: event => event.preventDefault(), onClick: quote}, t(kind === 'code' ? 'quoteCode' : 'quoteText'))));
   }
 
+  const hasInput = props => live && props.sessionId && typeof props.inputActions?.insertQuote === 'function' &&
+    typeof props.useInput === 'function' && typeof props.useSession === 'function';
   function sync() {
-    const entries = new Set(ctx.slots.entriesOfSlot(PREVIEW_QUOTE_SLOT).filter(entry => PREVIEW_QUOTE_ENTRIES.has(entry.options.key)));
+    const entries = new Map();
+    for (const [slot, keys] of PREVIEW_QUOTE_SLOTS) {
+      for (const entry of ctx.slots.entriesOfSlot(slot)) {
+        const kind = keys.get(entry.options.key);
+        if (kind) entries.set(entry, kind);
+      }
+    }
     for (const [entry, restore] of patches) if (!entries.has(entry)) { restore(); patches.delete(entry); }
-    for (const entry of entries) {
+    for (const [entry, kind] of entries) {
       if (patches.has(entry) || typeof entry.component !== 'function') continue;
       const Native = entry.component;
-      const kind = PREVIEW_QUOTE_ENTRIES.get(entry.options.key);
-      function PreviewWithQuote(props) {
-        if (!live || props.content?.kind !== 'text' || !props.sessionId ||
-            typeof props.inputActions?.insertQuote !== 'function') return h(Native, props);
+      function PlanWithQuote(props) {
+        const tab = props.useTabInfo();
+        const address = tab.tab.navigation.address;
+        if (!hasInput(props) || !previewPlanBelongsToSession(address, props.sessionId)) return h(Native, props);
+        return h(QuotePreview, {key: address, Native, nativeProps: props, kind, visible: tab.tab.visible});
+      }
+      function FileWithQuote(props) {
+        if (!hasInput(props) || props.content?.kind !== 'text') return h(Native, props);
         const path = kind === 'code' ? previewCodePath(props.resourceAddress, props.sessionId) : null;
         if (kind === 'code' && !path) return h(Native, props);
         return h(QuotePreview, {key: props.resourceAddress, Native, nativeProps: props, kind, path});
       }
-      entry.component = PreviewWithQuote;
-      patches.set(entry, () => { if (entry.component === PreviewWithQuote) entry.component = Native; });
+      const replacement = kind === 'plan' ? PlanWithQuote : FileWithQuote;
+      entry.component = replacement;
+      patches.set(entry, () => { if (entry.component === replacement) entry.component = Native; });
     }
   }
-  const off = ctx.slots.subscribe(PREVIEW_QUOTE_SLOT, sync);
+  const subscriptions = [...PREVIEW_QUOTE_SLOTS.keys()].map(slot => ctx.slots.subscribe(slot, sync));
   sync();
   return () => {
     live = false;
-    off();
+    for (const off of subscriptions) off();
     for (const dispose of disposers) dispose();
     for (const restore of patches.values()) restore();
     patches.clear();
@@ -1108,8 +1164,8 @@ const dicts = {
     sendFileToConversation: '发送文件到会话', sendFileToConversationHint: '在文件右键菜单中显示此操作。文件引用会加入当前会话的输入框，不会自动发送。',
     referenceFailed: '无法添加文件引用，请确认当前会话可以编辑。',
     quoteText: '引用文本', quoteCode: '引用代码', quoteFailed: '无法添加引用，请确认当前会话可以编辑。',
-    quoteCodeSelection: '代码预览引用代码', quoteCodeSelectionHint: '在代码预览中选中片段时显示「引用代码」，将片段和文件行号添加到当前草稿，不会自动发送。',
-    quoteMarkdownSelection: 'Markdown 预览引用文本', quoteMarkdownSelectionHint: '在 Markdown 预览中选中文字时显示「引用文本」。关闭后仍可选中和复制，不影响会话内引用或已有草稿。',
+    quotePlanReview: '先点「要求修改」，再引用',
+    quotePreviewSelection: '预览选区引用', quotePreviewSelectionHint: '在 Markdown、代码或计划预览中选中内容时，可引用到当前会话草稿，不会自动发送。',
     workspace: '工作区设置', pinWorkspace: '置顶工作区',
     activeIndicator: '活跃工作区标识', activeIndicatorHint: '工作区有运行中或等待交互的会话时，在右侧显示会话同款圆圈；悬停时隐藏，固定图标位于其右侧。',
     activityOngoing: '工作区有运行中的会话', activityWarning: '工作区有等待交互的会话',
@@ -1146,8 +1202,8 @@ const dicts = {
     sendFileToConversation: 'Send files to conversation', sendFileToConversationHint: 'Show this action in the file context menu. It adds a file reference to the current conversation’s draft without sending it.',
     referenceFailed: 'Could not add the file reference. Check that the current conversation is editable.',
     quoteText: 'Quote text', quoteCode: 'Quote code', quoteFailed: 'Could not add the quote. Check that the current conversation is editable.',
-    quoteMarkdownSelection: 'Quote text from Markdown previews', quoteMarkdownSelectionHint: 'Show “Quote text” when you select text in a Markdown preview. Turning this off does not affect copying, in-chat quotes, or existing drafts.',
-    quoteCodeSelection: 'Quote code from previews', quoteCodeSelectionHint: 'Show “Quote code” when you select code. It adds the snippet and its source lines to the draft without sending it.',
+    quotePlanReview: 'Choose “Request changes” before quoting.',
+    quotePreviewSelection: 'Quote selections from previews', quotePreviewSelectionHint: 'Add selected content from Markdown, code, or plan previews to the current conversation’s draft without sending it.',
     workspace: 'Workspace settings', pinWorkspace: 'Pin workspaces',
     activeIndicator: 'Active workspace indicator', activeIndicatorHint: 'Show the session status circle on the right when sessions are running or awaiting interaction. Hidden on hover, before the pin marker.',
     activityOngoing: 'Workspace has running sessions', activityWarning: 'Workspace has sessions awaiting interaction',
@@ -1940,7 +1996,7 @@ return {
               h('span', {className: 'dshsb-chevron', 'aria-hidden': true}, '▶'), t('rightSidebar')))),
           h('div', {className: 'dshsb-panel', id: `${panelId}-right-sidebar`, hidden: !expanded.rightSidebar,
             role: 'region', 'aria-labelledby': `${panelId}-right-sidebar-toggle`},
-            ...['showHidden', 'sendFileToConversation', 'quoteMarkdownSelection', 'quoteCodeSelection'].map(field => {
+            ...['showHidden', 'sendFileToConversation', 'quotePreviewSelection'].map(field => {
               const id = `${panelId}-${field}`;
               return h('div', {key: field, className: 'dshsb-row'},
                 h('div', {className: 'dshsb-setting-copy'},

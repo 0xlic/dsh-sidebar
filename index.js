@@ -16,8 +16,10 @@ export const Config = z.object({
     rightSidebar: z.object({
       showHidden: z.boolean().default(true),
       sendFileToConversation: z.boolean().default(true),
-      quoteMarkdownSelection: z.boolean().default(true),
-      quoteCodeSelection: z.boolean().default(true),
+      // No defaults here: an absent new value must not override legacy opt-outs.
+      quotePreviewSelection: z.boolean(),
+      quoteMarkdownSelection: z.boolean(),
+      quoteCodeSelection: z.boolean(),
     }).default(null),
     workspace: z.object({
       dynamicSort: z.boolean().default(true),

@@ -8,13 +8,33 @@ test('right sidebar default is checked and an explicit false survives config wri
   assert.equal(normalize(Config({preferences: {rightSidebar: {}}}).preferences.get()).rightSidebar.showHidden, true);
   const next = rename({rightSidebar: {showHidden: false}}, 'sidebar', 'chat', 'Chat');
   assert.equal(normalize(Config({preferences: next}).preferences.get()).rightSidebar.showHidden, false);
-  assert.equal(normalize(Config({preferences: next}).preferences.get()).rightSidebar.quoteMarkdownSelection, true);
-  const quoteOff = rename({rightSidebar: {quoteCodeSelection: false}}, 'sidebar', 'chat', 'Chat');
-  assert.deepEqual(normalize(Config({preferences: quoteOff}).preferences.get()).rightSidebar, {
-    showHidden: true, sendFileToConversation: true, quoteMarkdownSelection: true, quoteCodeSelection: false,
-  });
   assert.equal(normalize(null).rightSidebar, undefined);
   assert.throws(() => Config({preferences: {rightSidebar: {showHidden: 'false'}}}).preferences.get(), /expected boolean/);
+});
+
+test('preview quote migration honors either legacy opt-out unless an explicit new boolean exists', () => {
+  for (const [rightSidebar, enabled] of [
+    [{}, true],
+    [{quoteMarkdownSelection: true, quoteCodeSelection: true}, true],
+    [{quoteMarkdownSelection: false, quoteCodeSelection: true}, false],
+    [{quoteCodeSelection: false}, false],
+    [{quoteMarkdownSelection: false, quoteCodeSelection: false}, false],
+    [{quotePreviewSelection: true, quoteMarkdownSelection: false, quoteCodeSelection: false}, true],
+    [{quotePreviewSelection: false, quoteMarkdownSelection: true, quoteCodeSelection: true}, false],
+    [{quotePreviewSelection: null, quoteMarkdownSelection: false}, false],
+  ]) {
+    const preferences = {rightSidebar};
+    const parsed = Config({preferences}).preferences.get();
+    const expected = {showHidden: true, sendFileToConversation: true, quotePreviewSelection: enabled};
+    assert.deepEqual(normalize(preferences).rightSidebar, expected);
+    assert.deepEqual(normalize(parsed).rightSidebar, expected);
+    assert.deepEqual(Config({preferences: normalize(parsed)}).preferences.get().rightSidebar, expected);
+  }
+  assert.equal(normalize({rightSidebar: {quotePreviewSelection: 'true', quoteCodeSelection: false}}).rightSidebar.quotePreviewSelection, false);
+  assert.equal(normalize({rightSidebar: {quoteCodeSelection: 'false'}}).rightSidebar.quotePreviewSelection, true);
+  for (const key of ['quotePreviewSelection', 'quoteMarkdownSelection', 'quoteCodeSelection']) {
+    assert.throws(() => Config({preferences: {rightSidebar: {[key]: 'false'}}}).preferences.get(), /expected boolean/);
+  }
 });
 
 test('file references match native quoting and do not accept another root or traversal', () => {

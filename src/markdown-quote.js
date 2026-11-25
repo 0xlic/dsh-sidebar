@@ -1,14 +1,18 @@
-// rc.5 has no selection-action seat in previews. Wrap the two built-in
-// registrations, leaving their loader, renderer and Session props native.
-const PREVIEW_QUOTE_SLOT = 'sidebar.right.tab.document';
-const PREVIEW_QUOTE_ENTRIES = new Map([
-  ['@deepseek-ai/dsh-client-ui-sidebar-documentpreview/markdown', 'markdown'],
-  ['@deepseek-ai/dsh-client-ui-sidebar-documentpreview/code', 'code'],
+// rc.5 has no preview selection-action slot. Wrap only the known renderers,
+// leaving their resource loading, preview content and Session props native.
+const PREVIEW_QUOTE_SLOTS = new Map([
+  ['sidebar.right.tab.document', new Map([
+    ['@deepseek-ai/dsh-client-ui-sidebar-documentpreview/markdown', 'markdown'],
+    ['@deepseek-ai/dsh-client-ui-sidebar-documentpreview/code', 'code'],
+  ])],
+  ['sidebar.right.pane.tab', new Map([['@deepseek-ai/dsh-client-ui-plan', 'plan']])],
 ]);
 const CODE_BODY = '[data-code-preview] [data-code-block-content] pre > code';
+const PLAN_BODY = '[data-plan-preview]';
 const MARKDOWN_QUOTE_CSS = `
 .dshsb-markdown-quote-root{position:relative;min-width:0}
 .dshsb-markdown-quote-root[data-quote-kind=code]{display:flex;flex:1 1 auto;flex-direction:column;min-height:0;height:100%}
+.dshsb-markdown-quote-root[data-quote-kind=plan]{min-height:0;height:100%}
 .dshsb-markdown-quote{position:absolute;z-index:2;visibility:hidden;padding:5px 10px;border:0;border-radius:999px;
   background:var(--dsw-alias-button-floating-fill);--dsw-elevation-stroke-color:var(--dsw-alias-border-l3);
   box-shadow:var(--dsw-elevation-panel);color:var(--dsw-alias-label-primary);font:var(--dsw-font-xs-13);
@@ -16,12 +20,15 @@ const MARKDOWN_QUOTE_CSS = `
 .dshsb-markdown-quote:focus-visible{background:var(--dsw-alias-button-floating-hover);
   outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
 @media(hover:hover){.dshsb-markdown-quote:hover{background:var(--dsw-alias-button-floating-hover)}}
+.dshsb-markdown-quote[data-hint]{pointer-events:none;cursor:default;box-sizing:border-box;max-width:calc(100% - 8px);
+  border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-secondary);white-space:normal;overflow-wrap:anywhere}
 `;
 
-export function readMarkdownSelection(root, selection) {
+export function readMarkdownSelection(root, selection, kind) {
   if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null;
   const range = selection.getRangeAt(0);
-  const bodyOf = node => (node.nodeType === 1 ? node : node.parentElement)?.closest('[data-document-markdown]');
+  const selector = kind === 'plan' ? PLAN_BODY : '[data-document-markdown]';
+  const bodyOf = node => (node.nodeType === 1 ? node : node.parentElement)?.closest(selector);
   const body = bodyOf(range.startContainer);
   if (!body || body !== bodyOf(range.endContainer) || !root.contains(body) || body.closest('[hidden],[inert]')) return null;
   const text = selection.toString().trim();
@@ -93,12 +100,32 @@ export function markdownQuotePosition(rects, bounds, size, pointer) {
   };
 }
 
-export function markdownQuoteInput({uiSession, layout}, sessionId, inputActions) {
+export function previewPlanBelongsToSession(address, sessionId) {
+  const match = typeof address === 'string' && /^dsh-resource:\/\/(plan|plan-review)\/([^?#]+)$/.exec(address);
+  if (!match || !sessionId) return false;
+  try {
+    const raw = match[2].split('/');
+    const parts = raw.map(decodeURIComponent);
+    if (parts.some(part => !part)) return false;
+    if (parts.length === 2) return parts[0] === sessionId;
+    return match[1] === 'plan' && parts.length === 5 && raw[0] === 'subagent' &&
+      parts[2] === sessionId && ['one-shot', 'continuable', 'unknown'].includes(parts[3]);
+  } catch { return false; }
+}
+
+export function previewQuoteAvailability({uiSession, layout, conversation}, sessionId, inputActions, inputPhase, session) {
   if (!sessionId || uiSession.adapter.current.getSnapshot().key !== sessionId ||
-      layout.panelInfo.getSnapshot().activePanelId !== null) return null;
-  // The session-scoped document slot receives this stable standard prop from
-  // uiConversation, just like the native transcript quote action.
-  return typeof inputActions?.insertQuote === 'function' ? inputActions : null;
+      layout.panelInfo.getSnapshot().activePanelId !== null || typeof inputActions?.insertQuote !== 'function' ||
+      session?.removed || (session?.subagent && session.subagent.address?.mode !== 'continuable') ||
+      conversation?.blocks?.storeFor(sessionId).getSnapshot() !== undefined) return null;
+  const pending = uiSession.sessionStatus?.getSnapshot().get(sessionId)?.pendingInteraction;
+  if (pending) return pending.kind === 'plan-review' ? 'plan-review' : null;
+  if (inputPhase !== undefined && inputPhase !== 'plain') return null;
+  return 'quote';
+}
+
+export function markdownQuoteInput(ctx, sessionId, inputActions, inputPhase, session) {
+  return previewQuoteAvailability(ctx, sessionId, inputActions, inputPhase, session) === 'quote' ? inputActions : null;
 }
 
 function markdownVisibleBounds(body, view) {
@@ -107,7 +134,6 @@ function markdownVisibleBounds(body, view) {
   for (let node = body; node; node = node.parentElement) {
     const style = view.getComputedStyle(node);
     if (style.display === 'none' || style.visibility === 'hidden' || node.hidden || node.inert) return null;
-    if (node === body) continue;
     const clipsX = /^(auto|scroll|hidden|clip|overlay)$/.test(style.overflowX);
     const clipsY = /^(auto|scroll|hidden|clip|overlay)$/.test(style.overflowY);
     if (!clipsX && !clipsY) continue;
@@ -124,24 +150,35 @@ function sameMarkdownRange(a, b) {
 }
 
 export function registerPreviewQuote(ctx, React, t, preferences) {
-  const isEnabled = kind => preferences.getSnapshot().preferences.rightSidebar?.[
-    kind === 'code' ? 'quoteCodeSelection' : 'quoteMarkdownSelection'] !== false;
+  const isEnabled = () => preferences.getSnapshot().preferences.rightSidebar?.quotePreviewSelection !== false;
   const h = React.createElement;
   const patches = new Map();
   const current = ctx.uiSession.adapter.current;
   const panels = ctx.layout.panelInfo;
+  const status = ctx.uiSession.sessionStatus;
   let live = true;
   const disposers = new Set();
 
-  function QuotePreview({Native, nativeProps, kind, path}) {
-    const {sessionId, content, inputActions} = nativeProps;
+  function QuotePreview({Native, nativeProps, kind, path, visible = true}) {
+    const {sessionId, content, inputActions, useInput, useSession} = nativeProps;
     const root = React.useRef(null);
     const button = React.useRef(null);
     const selected = React.useRef(null);
     const [shown, setShown] = React.useState(false);
-    const text = content.text;
-    const enabled = React.useSyncExternalStore(preferences.subscribe, () => isEnabled(kind));
-    const readSelection = (el, selection) => kind === 'code' ? readCodeSelection(el, selection, text, path) : readMarkdownSelection(el, selection);
+    const text = content?.text;
+    const enabled = React.useSyncExternalStore(preferences.subscribe, isEnabled);
+    const inputPhase = useInput(input => input.phase);
+    const removed = useSession(session => session.removed);
+    const subagent = useSession(session => session.subagent);
+    const session = {removed, subagent};
+    const block = ctx.conversation?.blocks?.storeFor(sessionId);
+    const subscribeTarget = React.useCallback(listener => {
+      const unsub = [current, panels, status, block].filter(Boolean).map(store => store.subscribe(listener));
+      return () => { for (const off of unsub) off(); };
+    }, [block]);
+    const getTarget = () => visible ? previewQuoteAvailability(ctx, sessionId, inputActions, inputPhase, session) : null;
+    const target = React.useSyncExternalStore(subscribeTarget, getTarget);
+    const readSelection = (el, selection) => kind === 'code' ? readCodeSelection(el, selection, text, path) : readMarkdownSelection(el, selection, kind);
     React.useSyncExternalStore(callback => ctx.locale.subscribe(callback), () => ctx.locale.getSnapshot());
     function dismiss() {
       selected.current = null;
@@ -164,7 +201,7 @@ export function registerPreviewQuote(ctx, React, t, preferences) {
     }
     React.useLayoutEffect(place);
     React.useLayoutEffect(() => {
-      if (!enabled) return;
+      if (!enabled || !visible) return;
       const el = root.current;
       const doc = el?.ownerDocument, view = doc?.defaultView;
       if (!view) return;
@@ -175,7 +212,7 @@ export function registerPreviewQuote(ctx, React, t, preferences) {
         frame = view.requestAnimationFrame(() => { frame = null; place(); });
       };
       const refresh = pointer => {
-        if (pointerSelecting || !live || !isEnabled(kind)) return;
+        if (pointerSelecting || !live || !isEnabled()) return;
         const selection = readSelection(el, doc.getSelection());
         if (!selection) {
           // Tabbing to the button can collapse the document highlight.
@@ -186,7 +223,7 @@ export function registerPreviewQuote(ctx, React, t, preferences) {
         }
         if (sameMarkdownRange(previousRange, selection.range)) return;
         previousRange = selection.range.cloneRange();
-        if (!markdownQuoteInput(ctx, sessionId, inputActions)) { dismiss(); return; }
+        if (!getTarget()) { dismiss(); return; }
         selected.current = {...selection, range: previousRange, rawText: previousRange.toString(), pointer};
         setShown(true);
         schedulePlacement();
@@ -210,25 +247,25 @@ export function registerPreviewQuote(ctx, React, t, preferences) {
         cancel();
       };
       const checkTarget = () => {
-        if (current.getSnapshot().key !== sessionId || panels.getSnapshot().activePanelId !== null) cancel();
+        if (!getTarget()) cancel();
       };
       const listeners = [[doc, 'selectionchange', change], [doc, 'pointerdown', down, true],
         [doc, 'pointerup', up, true], [doc, 'pointercancel', cancel, true], [doc, 'keydown', keydown, true],
         [doc, 'scroll', schedulePlacement, true], [view, 'resize', schedulePlacement], [view, 'blur', cancel]];
       for (const [target, event, fn, capture] of listeners) target.addEventListener(event, fn, capture);
-      const offSession = current.subscribe(checkTarget), offPanel = panels.subscribe(checkTarget);
+      const offTarget = subscribeTarget(checkTarget);
       const observer = typeof view.ResizeObserver === 'function' ? new view.ResizeObserver(schedulePlacement) : null;
       observer?.observe(el);
       const dispose = () => {
         if (!disposers.delete(dispose)) return;
         for (const [target, event, fn, capture] of listeners) target.removeEventListener(event, fn, capture);
-        offSession(); offPanel(); observer?.disconnect();
+        offTarget(); observer?.disconnect();
         if (frame !== null) view.cancelAnimationFrame(frame);
         dismiss();
       };
       disposers.add(dispose);
       return dispose;
-    }, [sessionId, text, inputActions, enabled]);
+    }, [sessionId, text, inputActions, enabled, visible, inputPhase, removed, subagent, subscribeTarget]);
 
     function quote() {
       const el = root.current, captured = selected.current;
@@ -239,9 +276,11 @@ export function registerPreviewQuote(ctx, React, t, preferences) {
         captured.body.contains(captured.range.startContainer) && captured.body.contains(captured.range.endContainer) &&
         captured.range.toString() === captured.rawText &&
         (kind !== 'code' || readCodeRange(el, captured.range, text, path)?.text === captured.text);
-      if (!live || !isEnabled(kind) || !captured || (!keyboardSelection && (!selection ||
+      if (!live || !visible || !isEnabled() || !captured || (!keyboardSelection && (!selection ||
           !sameMarkdownRange(captured.range, selection.range) || selection.text !== captured.text))) { dismiss(); return; }
-      const input = markdownQuoteInput(ctx, sessionId, inputActions);
+      const view = el?.ownerDocument.defaultView;
+      if (!view || !markdownVisibleBounds(captured.body, view)) { dismiss(); return; }
+      const input = markdownQuoteInput(ctx, sessionId, inputActions, inputPhase, session);
       if (!input) { dismiss(); return; }
       if (!input.insertQuote(captured.text)) {
         ctx.contextMenus.notify(t('quoteFailed'), false);
@@ -253,34 +292,50 @@ export function registerPreviewQuote(ctx, React, t, preferences) {
       }
       dismiss();
     }
+    const floating = {ref: button, className: 'dshsb-markdown-quote'};
     return h('div', {ref: root, className: 'dshsb-markdown-quote-root', 'data-quote-kind': kind}, h('style', null, MARKDOWN_QUOTE_CSS),
-      h(Native, nativeProps), enabled && shown && h('button', {ref: button, type: 'button', className: 'dshsb-markdown-quote',
-        onPointerDown: event => event.preventDefault(), onClick: quote}, t(kind === 'code' ? 'quoteCode' : 'quoteText')));
+      h(Native, nativeProps), enabled && shown && (target === 'plan-review'
+        ? h('div', {...floating, role: 'status', 'data-hint': ''}, t('quotePlanReview'))
+        : target === 'quote' && h('button', {...floating, type: 'button',
+          onPointerDown: event => event.preventDefault(), onClick: quote}, t(kind === 'code' ? 'quoteCode' : 'quoteText'))));
   }
 
+  const hasInput = props => live && props.sessionId && typeof props.inputActions?.insertQuote === 'function' &&
+    typeof props.useInput === 'function' && typeof props.useSession === 'function';
   function sync() {
-    const entries = new Set(ctx.slots.entriesOfSlot(PREVIEW_QUOTE_SLOT).filter(entry => PREVIEW_QUOTE_ENTRIES.has(entry.options.key)));
+    const entries = new Map();
+    for (const [slot, keys] of PREVIEW_QUOTE_SLOTS) {
+      for (const entry of ctx.slots.entriesOfSlot(slot)) {
+        const kind = keys.get(entry.options.key);
+        if (kind) entries.set(entry, kind);
+      }
+    }
     for (const [entry, restore] of patches) if (!entries.has(entry)) { restore(); patches.delete(entry); }
-    for (const entry of entries) {
+    for (const [entry, kind] of entries) {
       if (patches.has(entry) || typeof entry.component !== 'function') continue;
       const Native = entry.component;
-      const kind = PREVIEW_QUOTE_ENTRIES.get(entry.options.key);
-      function PreviewWithQuote(props) {
-        if (!live || props.content?.kind !== 'text' || !props.sessionId ||
-            typeof props.inputActions?.insertQuote !== 'function') return h(Native, props);
+      function PlanWithQuote(props) {
+        const tab = props.useTabInfo();
+        const address = tab.tab.navigation.address;
+        if (!hasInput(props) || !previewPlanBelongsToSession(address, props.sessionId)) return h(Native, props);
+        return h(QuotePreview, {key: address, Native, nativeProps: props, kind, visible: tab.tab.visible});
+      }
+      function FileWithQuote(props) {
+        if (!hasInput(props) || props.content?.kind !== 'text') return h(Native, props);
         const path = kind === 'code' ? previewCodePath(props.resourceAddress, props.sessionId) : null;
         if (kind === 'code' && !path) return h(Native, props);
         return h(QuotePreview, {key: props.resourceAddress, Native, nativeProps: props, kind, path});
       }
-      entry.component = PreviewWithQuote;
-      patches.set(entry, () => { if (entry.component === PreviewWithQuote) entry.component = Native; });
+      const replacement = kind === 'plan' ? PlanWithQuote : FileWithQuote;
+      entry.component = replacement;
+      patches.set(entry, () => { if (entry.component === replacement) entry.component = Native; });
     }
   }
-  const off = ctx.slots.subscribe(PREVIEW_QUOTE_SLOT, sync);
+  const subscriptions = [...PREVIEW_QUOTE_SLOTS.keys()].map(slot => ctx.slots.subscribe(slot, sync));
   sync();
   return () => {
     live = false;
-    off();
+    for (const off of subscriptions) off();
     for (const dispose of disposers) dispose();
     for (const restore of patches.values()) restore();
     patches.clear();
